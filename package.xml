@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>zed_px4_bridge</name>
+  <version>0.0.1</version>
+  <description>PX4 ROS2 DDS mission executor and SITL mission tools.</description>
+
+  <maintainer email="djohnson32204@gmail.com">Darren Johnson</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>px4_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
