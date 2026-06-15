@@ -1,0 +1,7 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+px4_msgs/
+Micro-XRCE-DDS-Agent/

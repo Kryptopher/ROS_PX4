@@ -24,15 +24,36 @@ class MissionExecutorDDS(Node):
     def __init__(self):
         super().__init__('mission_executor_dds')
 
-        self.declare_parameter('mission_file', str(Path.home() / 'mission.csv'))
+        self.declare_parameter(
+            'mission_file',
+            str(Path.home() / 'ROS_PX4' / 'missions' / 'mission_sitl_test.tsv'))
         self.declare_parameter('rate_hz', 20.0)
         self.declare_parameter('auto_arm', False)
         self.declare_parameter('auto_offboard', False)
+        self.declare_parameter('auto_land', False)
+        self.declare_parameter('auto_disarm_after_land', False)
+        self.declare_parameter('force_disarm_after_land_timeout_s', 0.0)
+        self.declare_parameter('max_velocity_ms', 12.0)
+        self.declare_parameter('start_position_tolerance_m', 0.12)
+        self.declare_parameter('start_velocity_tolerance_ms', 0.15)
+        self.declare_parameter('start_settle_time_s', 1.5)
 
         self.mission_file = self.get_parameter('mission_file').value
         self.rate_hz = float(self.get_parameter('rate_hz').value)
         self.auto_arm = bool(self.get_parameter('auto_arm').value)
         self.auto_offboard = bool(self.get_parameter('auto_offboard').value)
+        self.auto_land = bool(self.get_parameter('auto_land').value)
+        self.auto_disarm_after_land = bool(
+            self.get_parameter('auto_disarm_after_land').value)
+        self.force_disarm_after_land_timeout_s = float(
+            self.get_parameter('force_disarm_after_land_timeout_s').value)
+        self.max_velocity = float(self.get_parameter('max_velocity_ms').value)
+        self.start_position_tolerance = float(
+            self.get_parameter('start_position_tolerance_m').value)
+        self.start_velocity_tolerance = float(
+            self.get_parameter('start_velocity_tolerance_ms').value)
+        self.start_settle_time = float(
+            self.get_parameter('start_settle_time_s').value)
 
         self.px4_pub_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -61,6 +82,8 @@ class MissionExecutorDDS(Node):
             '/mission_executor/event',
             10,
         )
+        self.active_pub = self.create_publisher(String, '/mission/active', 10)
+        self.create_subscription(String, '/mission/abort', self.abort_cb, 10)
 
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -75,10 +98,10 @@ class MissionExecutorDDS(Node):
             self.local_position_cb,
             px4_qos,
         )
-        self.vehicle_status_sub = self.create_subscription(
-            VehicleStatus,
-            '/fmu/out/vehicle_status',
-            self.vehicle_status_cb,
+        self.local_pos_v1_sub = self.create_subscription(
+            VehicleLocalPosition,
+            '/fmu/out/vehicle_local_position_v1',
+            self.local_position_cb,
             px4_qos,
         )
         self.vehicle_control_mode_sub = self.create_subscription(
@@ -101,6 +124,13 @@ class MissionExecutorDDS(Node):
         self.reported_mission_done = False
         self.reported_waiting_for_start = False
         self.reported_mission_started = False
+        self.aborted = False
+        self.abort_reason = ''
+        self.abort_command_sent = False
+        self.disarm_command_sent = False
+        self.land_command_time = None
+        self.start_settle_begin = None
+        self.reported_waiting_for_settle = False
 
         self.get_logger().info(f'Loaded mission: {self.mission_file}')
         self.get_logger().info(f'Rows: {len(self.rows)}')
@@ -121,6 +151,7 @@ class MissionExecutorDDS(Node):
                 )
 
             for r in reader:
+                heading_text = r.get('heading_deg', '')
                 rows.append({
                     't': float(r['t']),
                     'type': r['type'],
@@ -133,6 +164,7 @@ class MissionExecutorDDS(Node):
                     'vy': float(r['vy']),
                     'vz': float(r['vz']),
                     'ax': float(r['ax']),
+                    'heading_deg': float(heading_text) % 360.0 if heading_text else math.nan,
                 })
 
         if not rows:
@@ -149,6 +181,15 @@ class MissionExecutorDDS(Node):
 
     def vehicle_control_mode_cb(self, msg):
         self.vehicle_control_mode = msg
+
+    def abort_cb(self, msg):
+        if self.aborted:
+            return
+        self.aborted = True
+        self.abort_reason = msg.data
+        self.publish_event('MISSION_ABORTED', self.abort_reason)
+        self.publish_active(False)
+        self.get_logger().error(f'Mission abort requested: {self.abort_reason}')
 
     def is_armed_and_offboard(self):
         # Prefer VehicleControlMode because it directly reports armed/offboard control state.
@@ -208,11 +249,12 @@ class MissionExecutorDDS(Node):
             # Velocity mode: publish velocity and leave position NaN.
             # Mission vz is positive up -> PX4 vz is positive down.
             msg.position = [math.nan, math.nan, math.nan]
-            msg.velocity = [
-                float(row['vx']),
-                float(row['vy']),
-                float(-row['vz']),
-            ]
+            vx, vy, vz = float(row['vx']), float(row['vy']), float(row['vz'])
+            speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+            if speed > self.max_velocity:
+                scale = self.max_velocity / speed
+                vx, vy, vz = vx * scale, vy * scale, vz * scale
+            msg.velocity = [vx, vy, -vz]
             msg.acceleration = [math.nan, math.nan, math.nan]
 
         else:
@@ -220,7 +262,12 @@ class MissionExecutorDDS(Node):
             msg.velocity = [0.0, 0.0, 0.0]
             msg.acceleration = [math.nan, math.nan, math.nan]
 
-        msg.yaw = math.nan
+        # PX4 NED yaw is compass heading: 0=north, 90=east, increasing clockwise.
+        msg.yaw = (
+            math.radians(row['heading_deg'])
+            if math.isfinite(row['heading_deg'])
+            else math.nan
+        )
         msg.yawspeed = math.nan
 
         self.setpoint_pub.publish(msg)
@@ -244,18 +291,36 @@ class MissionExecutorDDS(Node):
         self.event_pub.publish(msg)
         self.get_logger().warn(f'MISSION_EVENT {event_type}: {detail}')
 
+    def publish_active(self, active):
+        msg = String()
+        msg.data = str(active).lower()
+        self.active_pub.publish(msg)
+
     def arm(self):
         self.get_logger().warn('Sending ARM command')
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
 
-    def disarm(self):
-        self.get_logger().warn('Sending DISARM command')
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0)
+    def disarm(self, force=False):
+        self.get_logger().warn(f'Sending DISARM command (force={force})')
+        force_magic = 21196.0 if force else 0.0
+        self.publish_vehicle_command(
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            0.0,
+            force_magic,
+        )
 
     def set_offboard_mode(self):
         self.get_logger().warn('Sending OFFBOARD mode command')
         # PX4 custom mode: param1=1, param2=6 for Offboard.
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+
+    def land(self):
+        self.get_logger().warn('Sending LAND command')
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+
+    def rtl(self):
+        self.get_logger().error('Sending RTL command')
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
 
     def get_current_row(self, elapsed):
         current = self.rows[0]
@@ -266,6 +331,55 @@ class MissionExecutorDDS(Node):
                 break
         return current
 
+    def get_setpoint_row(self, elapsed):
+        current = self.get_current_row(elapsed)
+        if current['profile'] != 'linear' or current['mode'] != 'pos':
+            return current
+
+        current_index = self.rows.index(current)
+        if current_index + 1 >= len(self.rows):
+            return current
+
+        following = self.rows[current_index + 1]
+        if following['type'] == 'end' or following['mode'] != 'pos':
+            return current
+
+        segment_duration = following['t'] - current['t']
+        if segment_duration <= 0:
+            return current
+
+        blend = min(1.0, max(0.0, (elapsed - current['t']) / segment_duration))
+        interpolated = dict(current)
+        for key in ('x', 'y', 'z'):
+            interpolated[key] = current[key] + blend * (following[key] - current[key])
+        if math.isfinite(current['heading_deg']) and math.isfinite(following['heading_deg']):
+            start = math.radians(current['heading_deg'])
+            end = math.radians(following['heading_deg'])
+            delta = math.atan2(math.sin(end - start), math.cos(end - start))
+            interpolated['heading_deg'] = math.degrees(start + blend * delta) % 360.0
+        return interpolated
+
+    def first_setpoint_is_settled(self):
+        row = self.rows[0]
+        if row['mode'] != 'pos' or self.local_position is None:
+            return True, 0.0, 0.0
+
+        position_error = math.sqrt(
+            (float(self.local_position.x) - row['x']) ** 2
+            + (float(self.local_position.y) - row['y']) ** 2
+            + (-float(self.local_position.z) - row['z']) ** 2
+        )
+        speed = math.sqrt(
+            float(self.local_position.vx) ** 2
+            + float(self.local_position.vy) ** 2
+            + float(self.local_position.vz) ** 2
+        )
+        settled = (
+            position_error <= self.start_position_tolerance
+            and speed <= self.start_velocity_tolerance
+        )
+        return settled, position_error, speed
+
     def timer_cb(self):
         # Wait until PX4 local position is available.
         if self.local_position is None:
@@ -273,6 +387,12 @@ class MissionExecutorDDS(Node):
                 'Waiting for /fmu/out/vehicle_local_position...',
                 throttle_duration_sec=2.0,
             )
+            return
+
+        if self.aborted:
+            if not self.abort_command_sent:
+                self.rtl()
+                self.abort_command_sent = True
             return
 
         # Before PX4 is armed and in Offboard, keep streaming the first setpoint
@@ -305,16 +425,45 @@ class MissionExecutorDDS(Node):
                     self.reported_waiting_for_start = True
                 return
 
-            self.start_time = self.get_clock().now().nanoseconds / 1e9
+            now = self.get_clock().now().nanoseconds / 1e9
+            settled, position_error, speed = self.first_setpoint_is_settled()
+            if not settled:
+                self.start_settle_begin = None
+                if not self.reported_waiting_for_settle:
+                    self.get_logger().warn(
+                        'Armed and Offboard; waiting to reach and settle at the first setpoint '
+                        f'(error={position_error:.3f} m, speed={speed:.3f} m/s)...'
+                    )
+                    self.publish_event(
+                        'WAITING_FOR_FIRST_SETPOINT',
+                        f'position_error_m={position_error:.3f}, speed_ms={speed:.3f}',
+                    )
+                    self.reported_waiting_for_settle = True
+                return
+
+            if self.start_settle_begin is None:
+                self.start_settle_begin = now
+                return
+            if now - self.start_settle_begin < self.start_settle_time:
+                return
+
+            self.start_time = now
             self.reported_waiting_for_start = False
-            self.get_logger().warn('PX4 is armed and in Offboard. Starting mission timer at t=0.')
+            self.reported_waiting_for_settle = False
+            self.get_logger().warn(
+                'PX4 reached and settled at the first setpoint. Starting mission timer at t=0.'
+            )
 
             if not self.reported_mission_started:
-                self.publish_event('MISSION_STARTED', 'PX4 armed and Offboard; t=0')
+                self.publish_event(
+                    'MISSION_STARTED',
+                    'PX4 armed, Offboard, and settled at first setpoint; t=0',
+                )
+                self.publish_active(True)
                 self.reported_mission_started = True
 
         elapsed = (self.get_clock().now().nanoseconds / 1e9) - self.start_time
-        row = self.get_current_row(elapsed)
+        row = self.get_setpoint_row(elapsed)
 
         if row['type'] == 'end':
             if self.last_active_row is None:
@@ -327,7 +476,22 @@ class MissionExecutorDDS(Node):
             )
             if not self.reported_mission_done:
                 self.publish_event('MISSION_COMPLETE_HOLDING', 'holding final setpoint')
+                self.publish_active(False)
+                if self.auto_land:
+                    self.land()
+                    self.land_command_time = self.get_clock().now().nanoseconds / 1e9
             self.reported_mission_done = True
+
+            if (
+                self.auto_disarm_after_land
+                and self.force_disarm_after_land_timeout_s > 0
+                and self.land_command_time is not None
+                and not self.disarm_command_sent
+            ):
+                now = self.get_clock().now().nanoseconds / 1e9
+                if now - self.land_command_time >= self.force_disarm_after_land_timeout_s:
+                    self.disarm(force=True)
+                    self.disarm_command_sent = True
 
             row = self.last_active_row
         else:
@@ -350,7 +514,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -1,0 +1,6 @@
+t	type	mode	profile	x	y	z	vx	vy	vz	ax
+0.00	cmd	vel	hold	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+10.00	cmd	vel	step	0.00	0.00	0.00	5.00	0.00	0.00	0.00
+15.00	cmd	vel	step	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+30.00	end	end	end	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+

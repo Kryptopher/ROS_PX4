@@ -16,10 +16,12 @@ setup(
     maintainer_email='djohnson32204@gmail.com',
     description='PX4 ROS2 DDS mission executor and SITL mission tools.',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'mission_executor_dds = zed_px4_bridge.mission_executor_dds:main',
+            'payload_encoder = zed_px4_bridge.payload_encoder:main',
+            'flight_logger = zed_px4_bridge.flight_logger:main',
+            'safety_monitor = zed_px4_bridge.safety_monitor:main',
         ],
     },
 )

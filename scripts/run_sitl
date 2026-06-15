@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec "$HOME/start_px4_sitl_mission.sh"
+exec "${ROS_PX4_HOME:-$HOME/ROS_PX4}/scripts/start_px4_sitl_mission.sh" "$@"
