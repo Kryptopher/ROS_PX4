@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+SITL_CONFIG_FILE="${SITL_CONFIG_FILE:-$HOME/.config/ros_px4/sitl-105.env}" \
+  exec "${ROS_PX4_HOME:-$HOME/ROS_PX4}/scripts/start_px4_sitl_mission.sh" "$@"

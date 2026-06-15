@@ -55,12 +55,18 @@ Copy scripts and mission files:
 
 ```bash
 cp scripts/start_px4_sitl_mission.sh ~/start_px4_sitl_mission.sh
-cp scripts/run_sitl ~/.local/bin/run_sitl
+ln -sf ~/ROS_PX4/scripts/run_sitl ~/.local/bin/run_sitl
+ln -sf ~/ROS_PX4/scripts/run_sitl_105 ~/.local/bin/run_sitl_105
 ln -sf ~/ROS_PX4/scripts/kill_sitl.sh ~/.local/bin/kill_sitl
+ln -sf ~/ROS_PX4/scripts/kill_sitl_105 ~/.local/bin/kill_sitl_105
 cp missions/mission_sitl_test.tsv ~/mission_sitl_test.tsv
 cp missions/mission_sitl_done_test.tsv ~/mission_sitl_done_test.tsv
 
-chmod +x ~/start_px4_sitl_mission.sh ~/.local/bin/run_sitl ~/.local/bin/kill_sitl
+chmod +x ~/start_px4_sitl_mission.sh \
+  ~/ROS_PX4/scripts/run_sitl \
+  ~/ROS_PX4/scripts/run_sitl_105 \
+  ~/ROS_PX4/scripts/kill_sitl.sh \
+  ~/ROS_PX4/scripts/kill_sitl_105
 ```
 
 Make sure `~/.local/bin` is in your PATH:
@@ -87,6 +93,7 @@ One-time setup:
 ```bash
 mkdir -p ~/.config/ros_px4
 cp ~/ROS_PX4/config/sitl.env.example ~/.config/ros_px4/sitl.env
+cp ~/ROS_PX4/config/sitl-105.env.example ~/.config/ros_px4/sitl-105.env
 nano ~/.config/ros_px4/sitl.env
 ```
 
@@ -96,6 +103,22 @@ address visible from the laptop. Test the connection from the Pi:
 ```bash
 source ~/.config/ros_px4/sitl.env
 ssh "$SITL_HOST" 'test -d ~/PX4-Autopilot && echo ready'
+```
+
+For the second PC profile, add this alias on the Pi:
+
+```text
+Host pc-105-sitl
+    HostName 192.168.0.105
+    Port 2222
+    User lsuic
+```
+
+Then test and launch that profile with:
+
+```bash
+ssh pc-105-sitl 'test -d ~/PX4-Autopilot && echo ready'
+run_sitl_105
 ```
 
 Then launch from the Pi:
