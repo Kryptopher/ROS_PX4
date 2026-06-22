@@ -1,0 +1,12 @@
+[Unit]
+Description=Holybro Pixhawk 6X TELEM3 uXRCE-DDS agent
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/MicroXRCEAgent serial -D /dev/ttyTHS1 -b 3000000 -v 4
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

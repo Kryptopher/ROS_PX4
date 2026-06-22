@@ -52,6 +52,9 @@ class SafetyMonitor(Node):
             VehicleStatus, '/fmu/out/vehicle_status',
             lambda msg: setattr(self, 'status', msg), qos)
         self.create_subscription(
+            VehicleStatus, '/fmu/out/vehicle_status_v1',
+            lambda msg: setattr(self, 'status', msg), qos)
+        self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status_v4',
             lambda msg: setattr(self, 'status', msg), qos)
         self.create_subscription(

@@ -188,6 +188,9 @@ and writes its buffered data.
 
 ## Run Against PX4 Hardware
 
+For the complete preflight, launch, recovery, shutdown, and logging procedure,
+see [Real Drone Mission Guide](REAL_DRONE_MISSION.md).
+
 After the PX4 DDS agent and vehicle connection are available:
 
 ```bash
@@ -204,7 +207,7 @@ In the PX4 `pxh>` shell, restart the QGC MAVLink link if needed:
 
 ```bash
 mavlink stop -u 18570
-mavlink start -x -u 18570 -r 4000000 -t 10.255.255.254 -o 14550 -f
+mavlink start -x -u 18570 -r 4000000 -t 192.168.0.163 -o 14550 -f
 mavlink boot_complete
 ```
 

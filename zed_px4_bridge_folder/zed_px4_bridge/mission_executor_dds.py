@@ -110,6 +110,24 @@ class MissionExecutorDDS(Node):
             self.vehicle_control_mode_cb,
             px4_qos,
         )
+        self.vehicle_status_sub = self.create_subscription(
+            VehicleStatus,
+            '/fmu/out/vehicle_status',
+            self.vehicle_status_cb,
+            px4_qos,
+        )
+        self.vehicle_status_v1_sub = self.create_subscription(
+            VehicleStatus,
+            '/fmu/out/vehicle_status_v1',
+            self.vehicle_status_cb,
+            px4_qos,
+        )
+        self.vehicle_status_v4_sub = self.create_subscription(
+            VehicleStatus,
+            '/fmu/out/vehicle_status_v4',
+            self.vehicle_status_cb,
+            px4_qos,
+        )
 
         self.local_position = None
         self.vehicle_status = None

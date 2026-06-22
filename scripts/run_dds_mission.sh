@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="${ROS_PX4_HOME:-$HOME/ROS_PX4}"
-ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
+ROS_WS="${ROS_WS:-$HOME/px4_ros2_ws}"
 MISSION_FILE="${MISSION_FILE:-${1:-$REPO/missions/hover_1m_test.tsv}}"
 RUN_LABEL="${RUN_LABEL:-$(basename "$MISSION_FILE" .tsv)}"
 SESSION="${DDS_SESSION:-px4_dds_mission}"
@@ -17,8 +17,11 @@ if [[ ! -f "$MISSION_FILE" ]]; then
   exit 1
 fi
 
+# ROS 2 setup scripts are not safe with Bash nounset enabled.
+set +u
 source /opt/ros/humble/setup.bash
 source "$ROS_WS/install/setup.bash"
+set -u
 
 if ! systemctl --user is-active --quiet dds-agent.service; then
   systemctl --user start dds-agent.service
@@ -26,14 +29,16 @@ if ! systemctl --user is-active --quiet dds-agent.service; then
 fi
 
 if ! systemctl --user is-active --quiet dds-agent.service; then
-  echo "The ARK TELEM2 DDS agent is not running. Check: systemctl --user status dds-agent.service" >&2
+  echo "The Holybro TELEM3 DDS agent is not running. Check: systemctl --user status dds-agent.service" >&2
   exit 1
 fi
 
-for required_topic in /fmu/out/vehicle_status /fmu/out/vehicle_local_position; do
-  if ! timeout 10 bash -c "until ros2 topic list | grep -qx '$required_topic'; do sleep 1; done"; then
-    echo "No DDS data on $required_topic from the Pixhawk." >&2
-    echo "Verify PX4 uXRCE-DDS is configured for TELEM2 at 3000000 baud and that TELEM2 is not also assigned to MAVLink." >&2
+for required_topic_pattern in \
+  '^/fmu/out/vehicle_status(_v[0-9]+)?$' \
+  '^/fmu/out/vehicle_local_position(_v[0-9]+)?$'; do
+  if ! timeout 10 bash -c "until ros2 topic list | grep -Eq '$required_topic_pattern'; do sleep 1; done"; then
+    echo "No matching DDS topic for $required_topic_pattern from the Pixhawk." >&2
+    echo "Verify PX4 uXRCE-DDS is assigned to TELEM3 at 3000000 baud and TELEM3 is not assigned to another driver." >&2
     exit 1
   fi
 done

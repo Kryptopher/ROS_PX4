@@ -1,0 +1,13 @@
+[Unit]
+Description=Pixhawk USB to QGroundControl UDP bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/scs/ROS_PX4/tools/mavlink_udp_bridge.py --serial /dev/ttyACM0 --target 192.168.0.163 --port 14550
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

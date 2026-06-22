@@ -63,6 +63,9 @@ class FlightLogger(Node):
             VehicleStatus, '/fmu/out/vehicle_status',
             lambda msg: setattr(self, 'vehicle_status', msg), qos)
         self.create_subscription(
+            VehicleStatus, '/fmu/out/vehicle_status_v1',
+            lambda msg: setattr(self, 'vehicle_status', msg), qos)
+        self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status_v4',
             lambda msg: setattr(self, 'vehicle_status', msg), qos)
         self.create_subscription(
