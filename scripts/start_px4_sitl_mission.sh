@@ -4,6 +4,7 @@ set -e
 SESSION="px4_sitl_mission"
 REPO="${ROS_PX4_HOME:-$HOME/ROS_PX4}"
 CONFIG_FILE="${SITL_CONFIG_FILE:-$HOME/.config/ros_px4/sitl.env}"
+ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -119,6 +120,15 @@ tmux send-keys -t "$PX4_PANE" '
     sleep 1
   done
 
+  # PX4's SITL startup script launches the uXRCE-DDS client with a loopback
+  # address.  In remote SITL, reconnect it after startup so it reaches the
+  # MicroXRCEAgent running on this Jetson.
+  if [[ "$SITL_MODE" == "remote" ]]; then
+    tmux send-keys -t "$PX4_PANE" "uxrce_dds_client stop" C-m
+    tmux send-keys -t "$PX4_PANE" \
+      "uxrce_dds_client start -t udp -h $SITL_AGENT_IP -p 8888" C-m
+  fi
+
   tmux send-keys -t "$PX4_PANE" "param set NAV_DLL_ACT 0" C-m
 ) &
 
@@ -129,7 +139,7 @@ EXECUTOR_PANE="$(tmux split-window -v -t "$PX4_PANE" -P -F '#{pane_id}')"
 tmux send-keys -t "$EXECUTOR_PANE" "
 sleep 12
 source /opt/ros/humble/setup.bash
-source ~/ROS_PX4/install/setup.bash
+source "$ROS_WS/install/setup.bash"
 ros2 run zed_px4_bridge mission_executor_dds --ros-args \\
   -p mission_file:=$MISSION_FILE \\
   -p rate_hz:=$EXECUTOR_RATE_HZ \\
@@ -148,7 +158,7 @@ LOGBOOK_PANE="$(tmux split-window -v -t "$AGENT_PANE" -P -F '#{pane_id}')"
 tmux send-keys -t "$LOGBOOK_PANE" "
 sleep 15
 source /opt/ros/humble/setup.bash
-source ~/ROS_PX4/install/setup.bash
+source "$ROS_WS/install/setup.bash"
 python3 '$REPO/tools/mission_logbook.py' --label '$LOGBOOK_LABEL' \\
   --sample-rate-hz '$LOGBOOK_RATE_HZ' \\
   --mission-file '$MISSION_FILE'
