@@ -548,6 +548,8 @@ class MissionLogbook(Node):
             event_type, detail = data, ""
 
         self.log_event(f"MISSION_EXECUTOR_{event_type}", detail)
+        if event_type == "MISSION_SELECTED" and detail:
+            self.mission_file = detail
         if event_type in {"MISSION_COMPLETE_HOLDING", "MISSION_ABORTED"}:
             self.write_logs()
 

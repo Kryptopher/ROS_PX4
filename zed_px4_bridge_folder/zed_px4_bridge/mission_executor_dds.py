@@ -84,6 +84,7 @@ class MissionExecutorDDS(Node):
         )
         self.active_pub = self.create_publisher(String, '/mission/active', 10)
         self.create_subscription(String, '/mission/abort', self.abort_cb, 10)
+        self.create_subscription(String, '/mission/control', self.control_cb, 10)
 
         px4_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -141,7 +142,9 @@ class MissionExecutorDDS(Node):
         self.last_active_row = None
         self.reported_mission_done = False
         self.reported_waiting_for_start = False
+        self.reported_waiting_for_takeoff = False
         self.reported_mission_started = False
+        self.takeoff_requested = False
         self.aborted = False
         self.abort_reason = ''
         self.abort_command_sent = False
@@ -208,6 +211,57 @@ class MissionExecutorDDS(Node):
         self.publish_event('MISSION_ABORTED', self.abort_reason)
         self.publish_active(False)
         self.get_logger().error(f'Mission abort requested: {self.abort_reason}')
+
+    def control_cb(self, msg):
+        parts = msg.data.split('|', 1)
+        command = parts[0].strip().upper()
+        value = parts[1].strip() if len(parts) > 1 else ''
+
+        if command == 'OFFBOARD':
+            self.set_offboard_mode()
+        elif command == 'ARM':
+            self.arm()
+        elif command == 'DISARM':
+            self.disarm(force=False)
+        elif command == 'TAKEOFF':
+            if self.start_time is None:
+                self.takeoff_requested = True
+                self.reported_waiting_for_takeoff = False
+                self.publish_event('TAKEOFF_REQUESTED', self.mission_file)
+                self.get_logger().warn('Takeoff requested; executor may now fly the selected TSV mission.')
+        elif command == 'LAND':
+            self.land()
+        elif command == 'RTL':
+            self.rtl()
+        elif command == 'SELECT_MISSION':
+            self.select_mission(value)
+        else:
+            self.get_logger().warn(f'Ignoring unknown mission control command: {msg.data}')
+
+    def select_mission(self, path):
+        if self.start_time is not None:
+            self.get_logger().error('Cannot change mission after takeoff has started.')
+            self.publish_event('MISSION_SELECT_REJECTED', 'mission already started')
+            return
+
+        candidate = str(Path(path).expanduser())
+        try:
+            rows = self.load_mission(candidate)
+        except Exception as exc:
+            self.get_logger().error(f'Could not load selected mission {candidate}: {exc}')
+            self.publish_event('MISSION_SELECT_REJECTED', f'{candidate}: {exc}')
+            return
+
+        self.mission_file = candidate
+        self.rows = rows
+        self.last_active_row = None
+        self.reported_waiting_for_start = False
+        self.reported_waiting_for_takeoff = False
+        self.reported_waiting_for_settle = False
+        self.start_settle_begin = None
+        self.takeoff_requested = False
+        self.publish_event('MISSION_SELECTED', self.mission_file)
+        self.get_logger().warn(f'Selected mission: {self.mission_file}')
 
     def is_armed_and_offboard(self):
         # Prefer VehicleControlMode because it directly reports armed/offboard control state.
@@ -290,6 +344,23 @@ class MissionExecutorDDS(Node):
 
         self.setpoint_pub.publish(msg)
 
+    def current_position_hold_row(self):
+        row = dict(self.rows[0])
+        if self.local_position is not None:
+            row.update({
+                'type': 'hold',
+                'mode': 'pos',
+                'profile': 'hold',
+                'x': float(self.local_position.x),
+                'y': float(self.local_position.y),
+                'z': -float(self.local_position.z),
+                'vx': 0.0,
+                'vy': 0.0,
+                'vz': 0.0,
+                'ax': 0.0,
+            })
+        return row
+
     def publish_vehicle_command(self, command, param1=0.0, param2=0.0):
         msg = VehicleCommand()
         msg.timestamp = self.now_us()
@@ -367,12 +438,16 @@ class MissionExecutorDDS(Node):
             return current
 
         blend = min(1.0, max(0.0, (elapsed - current['t']) / segment_duration))
-        interpolated = dict(current)
+        interpolated = self.interpolate_position_row(current, following, blend)
+        return interpolated
+
+    def interpolate_position_row(self, start_row, target_row, blend):
+        interpolated = dict(target_row)
         for key in ('x', 'y', 'z'):
-            interpolated[key] = current[key] + blend * (following[key] - current[key])
-        if math.isfinite(current['heading_deg']) and math.isfinite(following['heading_deg']):
-            start = math.radians(current['heading_deg'])
-            end = math.radians(following['heading_deg'])
+            interpolated[key] = start_row[key] + blend * (target_row[key] - start_row[key])
+        if math.isfinite(start_row['heading_deg']) and math.isfinite(target_row['heading_deg']):
+            start = math.radians(start_row['heading_deg'])
+            end = math.radians(target_row['heading_deg'])
             delta = math.atan2(math.sin(end - start), math.cos(end - start))
             interpolated['heading_deg'] = math.degrees(start + blend * delta) % 360.0
         return interpolated
@@ -416,7 +491,8 @@ class MissionExecutorDDS(Node):
         # Before PX4 is armed and in Offboard, keep streaming the first setpoint
         # so Offboard mode is available, but DO NOT start the mission clock yet.
         if self.start_time is None:
-            row = self.rows[0]
+            armed_and_offboard = self.is_armed_and_offboard()
+            row = self.rows[0] if self.takeoff_requested and armed_and_offboard else self.current_position_hold_row()
             mode = row['mode'] if row['mode'] in ['pos', 'vel'] else 'pos'
             self.publish_offboard_control_mode(mode)
             self.publish_setpoint(row)
@@ -434,13 +510,22 @@ class MissionExecutorDDS(Node):
                 else:
                     self.get_logger().warn('auto_arm disabled. Arm manually when ready.')
 
-            if not self.is_armed_and_offboard():
+            if not armed_and_offboard:
                 if not self.reported_waiting_for_start:
                     self.get_logger().warn(
-                        'Waiting for PX4 to be armed and in Offboard before starting mission timer...'
+                        'Waiting for PX4 to be armed and in Offboard. Takeoff is still gated by terminal UI.'
                     )
-                    self.publish_event('WAITING_FOR_ARM_OFFBOARD', 'mission timer not started')
+                    self.publish_event('WAITING_FOR_ARM_OFFBOARD', 'holding current position; mission timer not started')
                     self.reported_waiting_for_start = True
+                return
+
+            if not self.takeoff_requested:
+                if not self.reported_waiting_for_takeoff:
+                    self.get_logger().warn(
+                        'PX4 is armed and in Offboard. Holding current position until TAKEOFF is selected.'
+                    )
+                    self.publish_event('WAITING_FOR_TAKEOFF', 'armed/offboard; holding current position')
+                    self.reported_waiting_for_takeoff = True
                 return
 
             now = self.get_clock().now().nanoseconds / 1e9

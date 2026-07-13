@@ -21,7 +21,9 @@ setup(
             'mission_executor_dds = zed_px4_bridge.mission_executor_dds:main',
             'payload_encoder = zed_px4_bridge.payload_encoder:main',
             'flight_logger = zed_px4_bridge.flight_logger:main',
+            'mission_control_ui = zed_px4_bridge.mission_control_ui:main',
             'safety_monitor = zed_px4_bridge.safety_monitor:main',
+            'zed_to_px4_odom = zed_px4_bridge.zed_to_px4_odom:main',
         ],
     },
 )

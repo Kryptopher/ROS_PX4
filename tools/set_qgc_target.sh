@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE="$HOME/.config/systemd/user/mavlink-qgc-bridge.service"
-SERIAL="/dev/serial/by-id/usb-Auterion_PX4_FMU_v6X.x_0-if00"
-BRIDGE="/home/scs/ROS_PX4/tools/mavlink_udp_bridge.py"
-PORT="14550"
+SERVICE="$HOME/.config/systemd/user/mavlink-router.service"
+CONFIG_DIR="$HOME/.local/share/mavlink-router"
+CONFIG_FILE="$CONFIG_DIR/main.conf"
+TEMPLATE="$HOME/ROS_PX4/config/mavlink-router-main.conf"
 
 echo
 echo "Available nearby IPs:"
@@ -14,36 +14,18 @@ echo "Current Jetson IPs:"
 ip -4 addr show | awk '/inet / {print "  " $2}'
 echo
 
-read -rp "Enter QGroundControl laptop IP: " TARGET
-
-if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: '$TARGET' does not look like an IPv4 address."
-  exit 1
-fi
-
 mkdir -p "$HOME/.config/systemd/user"
-
-cat > "$SERVICE" <<EOF
-[Unit]
-Description=Pixhawk USB to QGroundControl UDP bridge
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 $BRIDGE --serial $SERIAL --target $TARGET --port $PORT
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
+mkdir -p "$CONFIG_DIR"
+install -m 0644 "$HOME/ROS_PX4/config/mavlink-router.service" "$SERVICE"
+install -m 0644 "$TEMPLATE" "$CONFIG_FILE"
 
 systemctl --user daemon-reload
-systemctl --user restart mavlink-qgc-bridge.service
+systemctl --user enable --now mavlink-router.service
+systemctl --user restart mavlink-router.service
 
 echo
-echo "MAVLink bridge target set to:"
-echo "  $TARGET:$PORT"
+echo "ARK MAVLink router is listening for QGroundControl on UDP port 14550."
+echo "Connect QGC to the Jetson IP on your current network, for example:"
+echo "  Hotspot: 10.42.0.1:14550"
 echo
-systemctl --user --no-pager status mavlink-qgc-bridge.service
+systemctl --user --no-pager status mavlink-router.service

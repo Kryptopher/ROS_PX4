@@ -1,0 +1,13 @@
+[Unit]
+Description=ARK PAB MAVLink router for QGroundControl
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/start_mavlink_router.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

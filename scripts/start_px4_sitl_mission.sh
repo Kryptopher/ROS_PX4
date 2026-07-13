@@ -12,6 +12,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 MISSION_FILE="${MISSION_FILE:-$REPO/missions/mission_sitl_test.tsv}"
+MISSION_DIR="${MISSION_DIR:-$REPO/missions}"
 MISSION_NAME="$(basename "$MISSION_FILE" .tsv)"
 RUN_NAME="${RUN_NAME:-${LOGBOOK_LABEL:-$MISSION_NAME}}"
 LOGBOOK_LABEL="sitl__${RUN_NAME}"
@@ -133,8 +134,8 @@ tmux send-keys -t "$PX4_PANE" '
 ) &
 
 # Pane 2: Mission executor.
-# It waits for PX4 local position, then waits until PX4 is armed and in Offboard
-# before starting the mission timer.
+# It waits for PX4 local position, then waits until the terminal UI requests
+# takeoff while PX4 is armed and in Offboard before starting the mission timer.
 EXECUTOR_PANE="$(tmux split-window -v -t "$PX4_PANE" -P -F '#{pane_id}')"
 tmux send-keys -t "$EXECUTOR_PANE" "
 sleep 12
@@ -153,7 +154,16 @@ ros2 run zed_px4_bridge mission_executor_dds --ros-args \\
   -p start_settle_time_s:=1.5
 " C-m
 
-# Pane 3: Mission state logbook
+# Pane 3: Terminal mission-control UI.
+UI_PANE="$(tmux split-window -v -t "$PX4_PANE" -P -F '#{pane_id}')"
+tmux send-keys -t "$UI_PANE" "
+sleep 14
+source /opt/ros/humble/setup.bash
+source "$ROS_WS/install/setup.bash"
+ros2 run zed_px4_bridge mission_control_ui --mission-dir "$MISSION_DIR" --kill-sitl-command "$REPO/scripts/kill_sitl.sh"
+" C-m
+
+# Pane 4: Mission state logbook
 LOGBOOK_PANE="$(tmux split-window -v -t "$AGENT_PANE" -P -F '#{pane_id}')"
 tmux send-keys -t "$LOGBOOK_PANE" "
 sleep 15

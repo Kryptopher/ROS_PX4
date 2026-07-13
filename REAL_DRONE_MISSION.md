@@ -14,26 +14,26 @@ Jetson. It does not start PX4 SITL or Gazebo.
 
 ## How the hardware is connected
 
-* Holybro Pixhawk 6X TELEM3 carries uXRCE-DDS data to the Jetson for ROS 2.
+* ARK PAB TELEM2 carries uXRCE-DDS data to the Jetson for ROS 2.
 * The Pixhawk USB-C connection carries MAVLink to the Jetson.
-* `mavlink-qgc-bridge.service` forwards USB MAVLink from the Pixhawk to
+* `mavlink-router.service` forwards USB MAVLink from the Pixhawk to
   QGroundControl over UDP port `14550`.
 * The mission launcher runs the executor, safety monitor, flight logger, and
   optional payload encoder on the Jetson.
 
-This vehicle uses a Holybro Pixhawk 6X with the PX4 FMUv6X architecture. On the
-Pixhawk, TELEM3 is `/dev/ttyS1`. The cable connects Pixhawk TELEM3 TX to Jetson
-RX, Pixhawk TELEM3 RX to Jetson TX, and ground to ground. On this Jetson, the
+This vehicle uses the ARK PAB / PX4 FMUv6X-style flight controller stack. In
+QGroundControl, assign uXRCE-DDS to `TELEM2`. The cable connects TELEM2 TX to
+Jetson RX, TELEM2 RX to Jetson TX, and ground to ground. On this Jetson, the
 selected UART is `/dev/ttyTHS1`.
 
 Leave the Pixhawk USB-C cable connected. USB-C remains dedicated to MAVLink and
-the QGC bridge, while TELEM3 is dedicated to uXRCE-DDS.
+`mavlink-router`, while TELEM2 is dedicated to uXRCE-DDS.
 
 Recommended link split:
 
 ```text
-Pixhawk USB-C  -> Jetson USB       -> MAVLink / QGroundControl bridge
-Pixhawk TELEM3 -> Jetson UART      -> uXRCE-DDS / ROS 2 Offboard
+Pixhawk USB-C  -> Jetson USB       -> MAVLink / QGroundControl router
+Pixhawk TELEM2 -> Jetson UART      -> uXRCE-DDS / ROS 2 Offboard
 Jetson Wi-Fi   -> Laptop/QGC/SSH   -> operator connection
 ```
 
@@ -86,13 +86,13 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-The launcher sources the existing `~/px4_ros2_ws/install/setup.bash`. Install
+The launcher sources the existing `~/ros2_ws/install/setup.bash`. Install
 the package into that workspace:
 
 ```bash
-mkdir -p ~/px4_ros2_ws/src
-ln -sfn ~/ROS_PX4/zed_px4_bridge_folder ~/px4_ros2_ws/src/zed_px4_bridge
-cd ~/px4_ros2_ws
+mkdir -p ~/ros2_ws/src
+ln -sfn ~/ROS_PX4/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
+cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-select zed_px4_bridge --symlink-install
 ```
@@ -358,101 +358,49 @@ journalctl -u drone-network-autoswitch.service -n 80 --no-pager
 
 ---
 
-## QGroundControl MAVLink IP target
+## QGroundControl MAVLink connection
 
 The Pixhawk USB-C cable carries MAVLink to the Jetson. The Jetson forwards that
 MAVLink stream to QGroundControl over UDP port `14550`.
 
-Because different people may use different laptops, do not permanently hardcode
-one QGC laptop IP. Instead, use the interactive QGC target script below.
+This ARK setup uses `mavlink-router` in UDP server mode, so the service does
+not need a hardcoded laptop IP. QGroundControl can connect from the Jetson
+hotspot or from normal Wi-Fi as long as it can reach the Jetson.
 
-### Create the interactive QGC target script
+Install or refresh the ARK MAVLink router config:
 
 ```bash
-mkdir -p ~/ROS_PX4/tools
-
-cat > ~/ROS_PX4/tools/set_qgc_target.sh <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-SERVICE="$HOME/.config/systemd/user/mavlink-qgc-bridge.service"
-SERIAL="/dev/serial/by-id/usb-Auterion_PX4_FMU_v6X.x_0-if00"
-BRIDGE="/home/scs/ROS_PX4/tools/mavlink_udp_bridge.py"
-PORT="14550"
-
-echo
-echo "Available nearby IPs:"
-ip neigh | awk '{print "  " $1 "  " $3 "  " $5}' || true
-echo
-echo "Current Jetson IPs:"
-ip -4 addr show | awk '/inet / {print "  " $2}'
-echo
-
-read -rp "Enter QGroundControl laptop IP: " TARGET
-
-if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: '$TARGET' does not look like an IPv4 address."
-  exit 1
-fi
-
-mkdir -p "$HOME/.config/systemd/user"
-
-cat > "$SERVICE" <<EOF
-[Unit]
-Description=Pixhawk USB to QGroundControl UDP bridge
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 $BRIDGE --serial $SERIAL --target $TARGET --port $PORT
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user restart mavlink-qgc-bridge.service
-
-echo
-echo "MAVLink bridge target set to:"
-echo "  $TARGET:$PORT"
-echo
-systemctl --user --no-pager status mavlink-qgc-bridge.service
-SH
-
 chmod +x ~/ROS_PX4/tools/set_qgc_target.sh
+~/ROS_PX4/tools/set_qgc_target.sh
 ```
 
-Add an easy command:
+Despite the historical name, `set_qgc_target.sh` now installs the ARK
+`mavlink-router` service and config. It does not prompt for a laptop IP.
+
+In QGroundControl, use UDP on port `14550`. In hotspot mode, connect to:
+
+```text
+10.42.0.1:14550
+```
+
+### Refresh the QGC router command
+
+Run this whenever you want to reinstall the ARK MAVLink router service/config:
 
 ```bash
-echo "alias drone_qgc_ip='~/ROS_PX4/tools/set_qgc_target.sh'" >> ~/.bashrc
-source ~/.bashrc
+~/ROS_PX4/tools/set_qgc_target.sh
 ```
 
-### Use the interactive QGC target command
-
-Run:
-
-```bash
-drone_qgc_ip
-```
-
-Then enter the laptop's QGC IP.
-
-For HomeWifi mode, the laptop IP is usually:
+For HomeWifi mode, QGC should connect to the Jetson's HomeWifi IP, usually:
 
 ```text
 192.168.0.xxx
 ```
 
-For JetsonHotspot mode, the laptop IP is usually:
+For JetsonHotspot mode, QGC should connect to the Jetson hotspot IP:
 
 ```text
-10.42.0.xxx
+10.42.0.1:14550
 ```
 
 To find connected hotspot clients from the Jetson:
@@ -467,14 +415,6 @@ Example output:
 10.42.0.23 dev wlP1p1s0 lladdr xx:xx:xx:xx:xx:xx REACHABLE
 ```
 
-Then run:
-
-```bash
-drone_qgc_ip
-```
-
-and enter:
-
 ```text
 10.42.0.23
 ```
@@ -484,24 +424,24 @@ second manual QGC link on the same port.
 
 ---
 
-## QGC bridge check
+## QGC router check
 
-Confirm the bridge is running:
+Confirm the router is running:
 
 ```bash
-systemctl --user status mavlink-qgc-bridge.service
+systemctl --user status mavlink-router.service
 ```
 
-Show the current target:
+Show the current service:
 
 ```bash
-systemctl --user cat mavlink-qgc-bridge.service
+systemctl --user cat mavlink-router.service
 ```
 
-Restart the bridge:
+Restart the router:
 
 ```bash
-systemctl --user restart mavlink-qgc-bridge.service
+systemctl --user restart mavlink-router.service
 ```
 
 ---
@@ -523,7 +463,7 @@ sudo reboot
 
 ## DDS agent setup
 
-Install and enable the Holybro Pixhawk TELEM3 DDS agent service:
+Install and enable the ARK PAB flight controller TELEM2 DDS agent service:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -535,20 +475,20 @@ systemctl --user status dds-agent.service
 ```
 
 This service runs `MicroXRCEAgent` on the Jetson's `/dev/ttyTHS1` UART at
-3,000,000 baud. Confirm the physical TELEM3 cable is connected to that UART
+3,000,000 baud. Confirm the physical TELEM2 cable is connected to that UART
 before expecting DDS topics.
 
 Configure the matching PX4 side once in QGC Parameters:
 
 ```text
-UXRCE_DDS_CFG = TELEM 3
-SER_TEL3_BAUD = 3000000
+UXRCE_DDS_CFG = TELEM 2
+SER_TEL2_BAUD = 3000000
 ```
 
 Some newer PX4 builds expose `UXRCE_DDS_FLCTRL`. It is not present on this
 vehicle's firmware and is not required for the three-wire TX/RX/ground link.
 
-Ensure no `MAV_*_CONFIG` or other serial driver is assigned to TELEM3. Reboot
+Ensure no `MAV_*_CONFIG` or other serial driver is assigned to TELEM2. Reboot
 PX4 with the propellers removed. In the QGC MAVLink Console, verify:
 
 ```text
@@ -556,18 +496,18 @@ uxrce_dds_client status
 ```
 
 It should report `Running, connected`. QGC continues to use the separate USB-C
-MAVLink bridge.
+MAVLink router.
 
 If the relayed QGC MAVLink Console is blank, verify DDS directly on the Jetson:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/px4_ros2_ws/install/setup.bash
+source ~/ros2_ws/install/setup.bash
 ros2 topic echo --once --qos-reliability best_effort \
   --qos-durability transient_local /fmu/out/sensor_combined
 ```
 
-A live sample confirms the PX4 client, TELEM3 link, Jetson agent, and ROS 2 DDS
+A live sample confirms the PX4 client, TELEM2 link, Jetson agent, and ROS 2 DDS
 path are all working even if the console does not render the status response.
 
 ---
@@ -585,7 +525,7 @@ Confirm that PX4 data is arriving:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/px4_ros2_ws/install/setup.bash
+source ~/ros2_ws/install/setup.bash
 ros2 topic list | grep '^/fmu/'
 ros2 topic echo --once --qos-reliability best_effort \
   --qos-durability transient_local /fmu/out/vehicle_status_v1
@@ -614,8 +554,10 @@ cd ~/ROS_PX4
 START_ENCODER=false scripts/run_dds_mission.sh missions/hover_1m_test.tsv
 ```
 
-The executor should say that it is waiting for PX4 to be armed and in Offboard.
-It must continuously publish setpoints before PX4 will accept Offboard mode.
+The executor should say that it is waiting for PX4 to be armed, in Offboard,
+and for the terminal UI's **Takeoff / Start TSV** action. Before takeoff is
+selected, it continuously publishes a current-position hold setpoint so PX4
+will accept Offboard mode without commanding the first airborne waypoint.
 
 Do not arm during this basic bench check unless you are deliberately performing
 a props-off arming test. Detach from tmux with `Ctrl-B`, then `D`, and stop the
@@ -699,40 +641,56 @@ sudo nmcli connection down HomeWifi 2>/dev/null
 sudo nmcli connection up JetsonHotspot
 ```
 
-Connect the QGC laptop to the correct network, then set the QGC target IP:
+Connect the QGC laptop to the correct network, then confirm the router is up:
 
 ```bash
-drone_qgc_ip
+systemctl --user status mavlink-router.service
 ```
 
 Confirm QGC shows live attitude, battery, GPS, and arming status.
 
-Start the conservative hover mission:
+Start the selected flight mission. Set `MISSION_FILE` to the TSV you intend to
+fly and choose safety limits that are above the planned mission envelope but
+still conservative for the test site:
 
 ```bash
 cd ~/ROS_PX4
-RUN_LABEL=first_hover \
+MISSION_FILE=$HOME/ROS_PX4/missions/hover_5m.tsv \
+RUN_LABEL=flight_test_01 \
 START_ENCODER=false \
-SAFETY_MAX_ALTITUDE_M=2.0 \
-SAFETY_WARN_ALTITUDE_M=1.5 \
+MISSION_DIR=$HOME/ROS_PX4/missions \
+SAFETY_MAX_ALTITUDE_M=10.0 \
+SAFETY_WARN_ALTITUDE_M=8.0 \
 SAFETY_MAX_VELOCITY_MS=1.5 \
-SAFETY_LOCAL_RADIUS_M=5.0 \
-scripts/run_dds_mission.sh missions/hover_1m_test.tsv
+SAFETY_LOCAL_RADIUS_M=10.0 \
+scripts/run_dds_mission.sh "$MISSION_FILE"
 ```
 
 Use `START_ENCODER=true` only when the payload encoder hardware is connected.
+The terminal UI's **Select Mission** option lists `.tsv` files from
+`MISSION_DIR`, which defaults to `~/ROS_PX4/missions`. If you select a different
+mission in the UI before takeoff, the executor switches to that TSV.
 
-Wait until the executor reports that it has loaded the mission, has local
-position, and is waiting for arming and Offboard mode. Check QGC once more for
-warnings. Then, when the pilot is ready:
+Wait until the executor reports that it has loaded the mission and has local
+position. A tmux pane opens the terminal mission-control UI.
+Use the arrow keys and Enter in that pane. Check QGC once more for warnings.
+Then, when the pilot is ready:
 
-1. Select **Offboard** in QGC or with the assigned RC mode switch.
-2. Arm the vehicle.
-3. Keep hands on the controls and watch the flight, QGC status, and tmux panes.
+1. Select **Switch Offboard** in the terminal UI.
+2. Select **Arm** in the terminal UI. This only arms the vehicle; it does not
+   start the TSV mission.
+3. Select **Select Mission** if you need to change the `.tsv` file before
+   takeoff.
+4. Select **Takeoff / Start TSV** when you are ready for the aircraft to climb
+   to the first TSV setpoint and begin the mission timer.
+5. Keep hands on the controls and watch the flight, QGC status, and tmux panes.
 
 Automatic arming and automatic Offboard selection are deliberately disabled.
-The mission clock starts only after PX4 is armed, in Offboard, and settled at
-the first setpoint for 1.5 seconds.
+Before takeoff is selected, the executor streams a hold at the current local
+position so Offboard remains available without commanding the first airborne
+waypoint. The mission clock starts only after takeoff is selected, PX4 is armed,
+PX4 is in Offboard, and the vehicle has settled at the first TSV setpoint for
+1.5 seconds.
 
 ---
 
@@ -760,8 +718,17 @@ stream makes PX4 invoke the configured Offboard-loss failsafe.
 
 ## 5. Shut down and collect logs
 
-After landing and disarming, stop each pane cleanly so the logger closes its
-files:
+After landing and disarming, select **Shutdown / Save Logs** in the terminal
+mission-control UI. This stops each mission pane cleanly so the logger closes
+its files, then closes the `px4_dds_mission` tmux session.
+
+If the UI is not available, run the same shutdown helper from another terminal:
+
+```bash
+~/ROS_PX4/scripts/stop_dds_mission.sh
+```
+
+Manual fallback:
 
 ```bash
 tmux send-keys -t px4_dds_mission:0.0 C-c
@@ -809,17 +776,17 @@ Find the laptop/QGC IP:
 ip neigh
 ```
 
-Set the QGC target:
+Confirm the QGC router is running:
 
 ```bash
-drone_qgc_ip
+systemctl --user status mavlink-router.service
 ```
 
-Restart the bridge:
+Restart the router:
 
 ```bash
-systemctl --user restart mavlink-qgc-bridge.service
-systemctl --user status mavlink-qgc-bridge.service
+systemctl --user restart mavlink-router.service
+systemctl --user status mavlink-router.service
 ```
 
 Confirm QGC uses UDP auto-connect on port `14550`.
@@ -905,17 +872,17 @@ Check `dds-agent.service`, the crossed TX/RX wiring and common ground, and run
 `uxrce_dds_client status` in the QGC MAVLink Console. Confirm:
 
 ```text
-UXRCE_DDS_CFG = TELEM 3
-SER_TEL3_BAUD = 3000000
+UXRCE_DDS_CFG = TELEM 2
+SER_TEL2_BAUD = 3000000
 ```
 
-Also confirm that no other driver is assigned to TELEM3.
+Also confirm that no other driver is assigned to TELEM2.
 
 Check ROS 2 topics:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/px4_ros2_ws/install/setup.bash
+source ~/ros2_ws/install/setup.bash
 ros2 topic list | grep '^/fmu/'
 ```
 
@@ -926,7 +893,7 @@ ros2 daemon stop
 pkill -f ros2-daemon
 rm -rf ~/.ros/ros2cli
 source /opt/ros/humble/setup.bash
-source ~/px4_ros2_ws/install/setup.bash
+source ~/ros2_ws/install/setup.bash
 ros2 topic list | grep '^/fmu/'
 ```
 
@@ -945,7 +912,7 @@ Check:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/px4_ros2_ws/install/setup.bash
+source ~/ros2_ws/install/setup.bash
 ros2 topic echo --once --qos-reliability best_effort \
   --qos-durability transient_local /fmu/out/vehicle_local_position_v1
 ```

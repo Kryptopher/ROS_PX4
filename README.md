@@ -6,8 +6,10 @@ This repo contains a ROS2 Humble PX4 Offboard mission executor, a mission logboo
 
 - Publishes PX4 Offboard heartbeat to `/fmu/in/offboard_control_mode`
 - Publishes trajectory setpoints to `/fmu/in/trajectory_setpoint`
-- Holds the first takeoff setpoint until PX4 is armed, in Offboard, and settled
-  at the requested position before starting the mission timer
+- Provides a terminal mission-control UI for Offboard, Arm, mission selection,
+  Takeoff, Land, RTL, and Disarm
+- Holds current local position until Takeoff is selected, then flies the first
+  TSV setpoint and starts the mission timer after settling
 - Keeps publishing the final setpoint after the mission reaches `end`
 - Publishes mission lifecycle events on `/mission_executor/event`
 - Logs PX4 state changes and mission executor events to CSV files
@@ -138,16 +140,27 @@ Run PX4 and Gazebo locally on the Pi only as a fallback:
 SITL_MODE=local run_sitl
 ```
 
-In the PX4 `pxh>` pane, start the simulated mission:
+Use the terminal mission-control UI pane to start the simulated mission:
+
+1. Select `Switch Offboard`.
+2. Select `Arm`.
+3. Optionally select a different `.tsv` with `Select Mission`.
+4. Select `Takeoff / Start TSV`.
+5. Select `Kill SITL` when you want to stop PX4, Gazebo, the DDS agent, and the
+   tmux session.
+
+`Select Mission` lists `.tsv` files from `MISSION_DIR`, which defaults to
+`~/ROS_PX4/missions`. For example:
 
 ```bash
-commander mode offboard
-commander arm
+MISSION_DIR=$HOME/ROS_PX4/missions RUN_NAME=hover_test run_sitl
 ```
 
-The executor first streams and holds the initial takeoff setpoint. It starts the
-mission timer only after simulated PX4 is armed, in Offboard mode, within
-`0.12 m` of that setpoint, and moving slower than `0.15 m/s` for `1.5 s`.
+Before takeoff is selected, the executor streams a hold at the current local
+position so Offboard remains available without commanding the first airborne
+waypoint. It starts the mission timer only after simulated PX4 is armed, in
+Offboard mode, takeoff has been requested, the vehicle is within `0.12 m` of the
+first TSV setpoint, and it is moving slower than `0.15 m/s` for `1.5 s`.
 
 The logbook automatically records mission events and state samples at `100 Hz`,
 including mode, arming, failsafe, landed state, position, and velocity. Change
@@ -203,20 +216,16 @@ The launcher starts the mission executor, independent safety monitor, flight
 logger, and payload encoder in a tmux session. Set `START_ENCODER=false` when
 running without the Raspberry Pi encoder hardware.
 
-In the PX4 `pxh>` shell, restart the QGC MAVLink link if needed:
+For this ARK PAB Jetson, QGroundControl MAVLink is handled by
+`mavlink-router.service` over the Pixhawk USB-C/FCUSB link:
 
 ```bash
-mavlink stop -u 18570
-mavlink start -x -u 18570 -r 4000000 -t 192.168.0.163 -o 14550 -f
-mavlink boot_complete
+~/ROS_PX4/tools/set_qgc_target.sh
+systemctl --user status mavlink-router.service
 ```
 
-Then start the mission:
-
-```bash
-commander mode offboard
-commander arm
-```
+Then use the terminal mission-control UI pane to select `Switch Offboard`,
+`Arm`, and `Takeoff / Start TSV`.
 
 At mission end, the drone should hold the final setpoint. Land manually:
 
@@ -278,7 +287,7 @@ Example:
 ```text
 t	type	mode	profile	x	y	z	vx	vy	vz	ax	heading_deg
 0	takeoff	pos	hold	0	0	1.0	0	0	0	0	0
-5	wp	pos	hold	1	0	1.0	0	0	0	0	90
+5	wp	pos	linear	1	0	1.0	0	0	0	0	90
 10	end	end	end	0	0	0	0	0	0	0
 ```
 

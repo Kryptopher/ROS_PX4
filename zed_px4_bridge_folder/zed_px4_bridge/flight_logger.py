@@ -86,6 +86,8 @@ class FlightLogger(Node):
 
     def _event_cb(self, msg):
         event_type, _, detail = msg.data.partition('|')
+        if event_type == 'MISSION_SELECTED' and detail:
+            self.mission_file = detail
         self.event_writer.writerow([
             datetime.now().isoformat(), f'{self._elapsed():.4f}',
             event_type, detail,

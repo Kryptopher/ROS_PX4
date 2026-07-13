@@ -11,7 +11,7 @@ import serial
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--serial", default="/dev/ttyACM0")
+    parser.add_argument("--serial", default="/dev/serial/by-id/usb-ARK_ARK_FMU_v6X.x_0-if00")
     parser.add_argument("--baud", type=int, default=2_000_000)
     parser.add_argument("--target", required=True)
     parser.add_argument("--port", type=int, default=14550)

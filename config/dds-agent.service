@@ -1,5 +1,5 @@
 [Unit]
-Description=Holybro Pixhawk 6X TELEM3 uXRCE-DDS agent
+Description=ARK PAB TELEM2 uXRCE-DDS agent
 After=default.target
 
 [Service]

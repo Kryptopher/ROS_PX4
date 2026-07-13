@@ -2,8 +2,9 @@
 set -euo pipefail
 
 REPO="${ROS_PX4_HOME:-$HOME/ROS_PX4}"
-ROS_WS="${ROS_WS:-$HOME/px4_ros2_ws}"
+ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
 MISSION_FILE="${MISSION_FILE:-${1:-$REPO/missions/hover_1m_test.tsv}}"
+MISSION_DIR="${MISSION_DIR:-$REPO/missions}"
 RUN_LABEL="${RUN_LABEL:-$(basename "$MISSION_FILE" .tsv)}"
 SESSION="${DDS_SESSION:-px4_dds_mission}"
 START_ENCODER="${START_ENCODER:-true}"
@@ -29,7 +30,7 @@ if ! systemctl --user is-active --quiet dds-agent.service; then
 fi
 
 if ! systemctl --user is-active --quiet dds-agent.service; then
-  echo "The Holybro TELEM3 DDS agent is not running. Check: systemctl --user status dds-agent.service" >&2
+  echo "The ARK PAB TELEM2 DDS agent is not running. Check: systemctl --user status dds-agent.service" >&2
   exit 1
 fi
 
@@ -38,7 +39,7 @@ for required_topic_pattern in \
   '^/fmu/out/vehicle_local_position(_v[0-9]+)?$'; do
   if ! timeout 10 bash -c "until ros2 topic list | grep -Eq '$required_topic_pattern'; do sleep 1; done"; then
     echo "No matching DDS topic for $required_topic_pattern from the Pixhawk." >&2
-    echo "Verify PX4 uXRCE-DDS is assigned to TELEM3 at 3000000 baud and TELEM3 is not assigned to another driver." >&2
+    echo "Verify PX4 uXRCE-DDS is assigned to TELEM2 at 3000000 baud and TELEM2 is not assigned to another driver." >&2
     exit 1
   fi
 done
@@ -82,14 +83,19 @@ ros2 run zed_px4_bridge flight_logger --ros-args \
 " C-m
 
 tmux split-window -v -t "$SESSION":0.1
+tmux send-keys -t "$SESSION":0.3 "
+source /opt/ros/humble/setup.bash
+source '$ROS_WS/install/setup.bash'
+ros2 run zed_px4_bridge mission_control_ui --mission-dir '$MISSION_DIR' --shutdown-command '$REPO/scripts/stop_dds_mission.sh'
+" C-m
+
 if [[ "$START_ENCODER" == "true" ]]; then
-  tmux send-keys -t "$SESSION":0.3 "
+  tmux split-window -v -t "$SESSION":0.1
+  tmux send-keys -t "$SESSION":0.4 "
 source /opt/ros/humble/setup.bash
 source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge payload_encoder
 " C-m
-else
-  tmux send-keys -t "$SESSION":0.3 "echo 'Payload encoder disabled'; bash" C-m
 fi
 
 tmux select-layout -t "$SESSION":0 tiled
