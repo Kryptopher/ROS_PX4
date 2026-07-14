@@ -5,13 +5,18 @@ REPO="${ROS_PX4_HOME:-$HOME/ROS_PX4}"
 ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
 MISSION_FILE="${MISSION_FILE:-${1:-$REPO/missions/hover_1m_test.tsv}}"
 MISSION_DIR="${MISSION_DIR:-$REPO/missions}"
-RUN_LABEL="${RUN_LABEL:-$(basename "$MISSION_FILE" .tsv)}"
+RUN_LABEL="${RUN_LABEL:-real__$(basename "$MISSION_FILE" .tsv)}"
 SESSION="${DDS_SESSION:-px4_dds_mission}"
 START_ENCODER="${START_ENCODER:-true}"
+EXECUTOR_RATE_HZ="${EXECUTOR_RATE_HZ:-200.0}"
 SAFETY_MAX_ALTITUDE_M="${SAFETY_MAX_ALTITUDE_M:-2.0}"
 SAFETY_WARN_ALTITUDE_M="${SAFETY_WARN_ALTITUDE_M:-1.5}"
 SAFETY_MAX_VELOCITY_MS="${SAFETY_MAX_VELOCITY_MS:-1.5}"
 SAFETY_LOCAL_RADIUS_M="${SAFETY_LOCAL_RADIUS_M:-5.0}"
+MISSION_WEB_PORT="${MISSION_WEB_PORT:-8080}"
+COPY_ULOG="${COPY_ULOG:-true}"
+ULOG_SOURCE_DIR="${ULOG_SOURCE_DIR:-$HOME/.local/share/logloader/logs}"
+ULOG_WAIT_S="${ULOG_WAIT_S:-10.0}"
 
 if [[ ! -f "$MISSION_FILE" ]]; then
   echo "Mission file not found: $MISSION_FILE" >&2
@@ -51,19 +56,21 @@ fi
 
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 tmux new-session -d -s "$SESSION" -n mission
+EXECUTOR_PANE="$(tmux display-message -p -t "$SESSION":0.0 '#{pane_id}')"
 
-tmux send-keys -t "$SESSION":0.0 "
+tmux send-keys -t "$EXECUTOR_PANE" "
 source /opt/ros/humble/setup.bash
 source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge mission_executor_dds --ros-args \
   -p mission_file:='$MISSION_FILE' \
+  -p rate_hz:=$EXECUTOR_RATE_HZ \
   -p auto_arm:=false \
   -p auto_offboard:=false \
   -p auto_land:=false
 " C-m
 
-tmux split-window -h -t "$SESSION":0.0
-tmux send-keys -t "$SESSION":0.1 "
+SAFETY_PANE="$(tmux split-window -h -t "$EXECUTOR_PANE" -P -F '#{pane_id}')"
+tmux send-keys -t "$SAFETY_PANE" "
 source /opt/ros/humble/setup.bash
 source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge safety_monitor --ros-args \
@@ -73,25 +80,35 @@ ros2 run zed_px4_bridge safety_monitor --ros-args \
   -p local_radius_m:=$SAFETY_LOCAL_RADIUS_M
 " C-m
 
-tmux split-window -v -t "$SESSION":0.0
-tmux send-keys -t "$SESSION":0.2 "
+LOGGER_PANE="$(tmux split-window -v -t "$EXECUTOR_PANE" -P -F '#{pane_id}')"
+tmux send-keys -t "$LOGGER_PANE" "
 source /opt/ros/humble/setup.bash
 source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge flight_logger --ros-args \
   -p mission_file:='$MISSION_FILE' \
-  -p run_label:='$RUN_LABEL'
+  -p run_label:='$RUN_LABEL' \
+  -p copy_ulog:=$COPY_ULOG \
+  -p ulog_source_dir:='$ULOG_SOURCE_DIR' \
+  -p ulog_wait_s:=$ULOG_WAIT_S
 " C-m
 
-tmux split-window -v -t "$SESSION":0.1
-tmux send-keys -t "$SESSION":0.3 "
+TERMINAL_UI_PANE="$(tmux split-window -v -t "$SAFETY_PANE" -P -F '#{pane_id}')"
+tmux send-keys -t "$TERMINAL_UI_PANE" "
 source /opt/ros/humble/setup.bash
 source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge mission_control_ui --mission-dir '$MISSION_DIR' --shutdown-command '$REPO/scripts/stop_dds_mission.sh'
 " C-m
 
+WEB_UI_PANE="$(tmux split-window -v -t "$SAFETY_PANE" -P -F '#{pane_id}')"
+tmux send-keys -t "$WEB_UI_PANE" "
+source /opt/ros/humble/setup.bash
+source '$ROS_WS/install/setup.bash'
+ros2 run zed_px4_bridge mission_control_web --mission-dir '$MISSION_DIR' --port '$MISSION_WEB_PORT' --shutdown-command '$REPO/scripts/stop_dds_mission.sh'
+" C-m
+
 if [[ "$START_ENCODER" == "true" ]]; then
-  tmux split-window -v -t "$SESSION":0.1
-  tmux send-keys -t "$SESSION":0.4 "
+  ENCODER_PANE="$(tmux split-window -v -t "$SAFETY_PANE" -P -F '#{pane_id}')"
+  tmux send-keys -t "$ENCODER_PANE" "
 source /opt/ros/humble/setup.bash
 source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge payload_encoder

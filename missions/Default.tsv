@@ -1,0 +1,4 @@
+t	type	mode	profile	x	y	z	vx	vy	vz	ax	heading_deg
+0	takeoff	pos	linear	0	0	0	0	0	0	0	0
+5	wp	pos	linear	0	0	5.0	0	0	0	0	0
+30	end	end	end	0	0	0	0	0	0	0	0

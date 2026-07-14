@@ -91,26 +91,36 @@ class MissionControlNode(Node):
         )
 
 
+def safe_addstr(stdscr, y, x, text, attr=curses.A_NORMAL):
+    height, width = stdscr.getmaxyx()
+    if y < 0 or y >= height or x >= width:
+        return
+    try:
+        stdscr.addstr(y, x, str(text)[:max(0, width - x - 1)], attr)
+    except curses.error:
+        pass
+
+
 def draw_menu(stdscr, node, items, selected):
     stdscr.erase()
-    height, width = stdscr.getmaxyx()
     title = 'PX4 DDS Mission Control'
-    stdscr.addstr(0, 0, title[:width - 1], curses.A_BOLD)
-    stdscr.addstr(2, 0, f'Armed: {node.armed}   Offboard: {node.offboard}'[:width - 1])
-    stdscr.addstr(3, 0, f'nav_state: {node.nav_state}   arming_state: {node.arming_state}'[:width - 1])
-    stdscr.addstr(4, 0, f'Mission folder: {node.mission_dir}'[:width - 1])
+    safe_addstr(stdscr, 0, 0, title, curses.A_BOLD)
+    safe_addstr(stdscr, 2, 0, f'Armed: {node.armed}   Offboard: {node.offboard}')
+    safe_addstr(stdscr, 3, 0, f'nav_state: {node.nav_state}   arming_state: {node.arming_state}')
+    safe_addstr(stdscr, 4, 0, f'Mission folder: {node.mission_dir}')
     if node.selected_mission:
-        stdscr.addstr(5, 0, f'Mission: {node.selected_mission}'[:width - 1])
+        safe_addstr(stdscr, 5, 0, f'Mission: {node.selected_mission}')
     if node.last_event:
-        stdscr.addstr(6, 0, f'Event: {node.last_event}'[:width - 1])
-    stdscr.addstr(8, 0, 'Use arrows, Enter to select, q to quit.'[:width - 1])
+        safe_addstr(stdscr, 6, 0, f'Event: {node.last_event}')
+    safe_addstr(stdscr, 8, 0, 'Use arrows, Enter to select, q to quit.')
 
+    height, _ = stdscr.getmaxyx()
     for idx, item in enumerate(items):
         y = 10 + idx
         if y >= height:
             break
         attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
-        stdscr.addstr(y, 0, item[:width - 1], attr)
+        safe_addstr(stdscr, y, 0, item, attr)
     stdscr.refresh()
 
 
@@ -124,14 +134,14 @@ def mission_picker(stdscr, node):
         rclpy.spin_once(node, timeout_sec=0.0)
         stdscr.erase()
         height, width = stdscr.getmaxyx()
-        stdscr.addstr(0, 0, 'Select Mission'[:width - 1], curses.A_BOLD)
-        stdscr.addstr(2, 0, 'Enter selects, Esc returns.'[:width - 1])
+        safe_addstr(stdscr, 0, 0, 'Select Mission', curses.A_BOLD)
+        safe_addstr(stdscr, 2, 0, 'Enter selects, Esc returns.')
         for idx, mission in enumerate(missions):
             y = 4 + idx
             if y >= height:
                 break
             attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
-            stdscr.addstr(y, 0, mission.name[:width - 1], attr)
+            safe_addstr(stdscr, y, 0, mission.name, attr)
         stdscr.refresh()
         key = stdscr.getch()
         if key == curses.KEY_UP:

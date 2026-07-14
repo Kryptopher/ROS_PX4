@@ -162,6 +162,15 @@ waypoint. It starts the mission timer only after simulated PX4 is armed, in
 Offboard mode, takeoff has been requested, the vehicle is within `0.12 m` of the
 first TSV setpoint, and it is moving slower than `0.15 m/s` for `1.5 s`.
 
+The launcher also starts a browser mission-control panel on the Jetson:
+
+```text
+http://JETSON_IP:8080
+```
+
+Set `MISSION_WEB_PORT` to use a different port. The terminal UI remains
+available in tmux as a fallback.
+
 The logbook automatically records mission events and state samples at `100 Hz`,
 including mode, arming, failsafe, landed state, position, and velocity. Change
 the requested rate with `LOGBOOK_RATE_HZ`; summaries report the achieved rate.
@@ -176,15 +185,19 @@ New filenames include a readable timestamp,
 2026-06-12_14-05-30__sitl__mission_sitl_test__trajectory_3d.png
 2026-06-12_14-05-30__sitl__mission_sitl_test__xy.png
 2026-06-12_14-05-30__sitl__mission_sitl_test__height.png
+2026-06-12_14-05-30__sitl__mission_sitl_test__x_time.png
+2026-06-12_14-05-30__sitl__mission_sitl_test__y_time.png
 ```
 
 The 3D plot overlays numbered mission waypoints, the streamed trajectory
 commands, and the recorded drone path.
 The top-down XY and height plots compare the streamed trajectory setpoints with
-the recorded position during the armed flight interval, excluding ground
-estimator drift before takeoff and after disarm. The commands CSV captures every
-streamed trajectory setpoint sent to PX4. These artifacts are regenerated when
-the logbook saves, including during graceful cleanup.
+the recorded position during the armed flight interval. The X-vs-time and
+Y-vs-time plots show each horizontal axis separately against the streamed
+setpoints. These plots exclude ground estimator drift before takeoff and after
+disarm. The commands CSV captures every streamed trajectory setpoint sent to
+PX4. These artifacts are regenerated when the logbook saves, including during
+graceful cleanup.
 
 Give an experiment a descriptive run name with:
 
@@ -226,6 +239,10 @@ systemctl --user status mavlink-router.service
 
 Then use the terminal mission-control UI pane to select `Switch Offboard`,
 `Arm`, and `Takeoff / Start TSV`.
+
+The hardware launcher also starts the browser mission-control panel at
+`http://JETSON_IP:8080`. Use it for the same controls and live status, while
+keeping the terminal UI as a fallback.
 
 At mission end, the drone should hold the final setpoint. Land manually:
 

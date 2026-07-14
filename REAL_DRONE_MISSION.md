@@ -257,7 +257,7 @@ ssh scs@10.42.0.1
 ## Optional automatic Wi-Fi fallback
 
 This optional service tries `HomeWifi` at boot. If no internet is detected
-within 30 seconds, it switches to `JetsonHotspot`.
+within 15 seconds, it switches to `JetsonHotspot`.
 
 Create the script:
 
@@ -269,7 +269,7 @@ set -u
 WIFI_IF="wlP1p1s0"
 HOME_CON="HomeWifi"
 HOTSPOT_CON="JetsonHotspot"
-WAIT_SECONDS=30
+WAIT_SECONDS=15
 
 log() {
   logger -t drone-network-autoswitch "$*"
@@ -554,10 +554,9 @@ cd ~/ROS_PX4
 START_ENCODER=false scripts/run_dds_mission.sh missions/hover_1m_test.tsv
 ```
 
-The executor should say that it is waiting for PX4 to be armed, in Offboard,
-and for the terminal UI's **Takeoff / Start TSV** action. Before takeoff is
-selected, it continuously publishes a current-position hold setpoint so PX4
-will accept Offboard mode without commanding the first airborne waypoint.
+The executor should say that the Offboard stream is idle until the UI requests
+it. This prevents the vehicle from entering Offboard just because the launcher
+started while a transmitter/QGC mode switch was already set to Offboard.
 
 Do not arm during this basic bench check unless you are deliberately performing
 a props-off arming test. Detach from tmux with `Ctrl-B`, then `D`, and stop the
@@ -655,14 +654,13 @@ still conservative for the test site:
 
 ```bash
 cd ~/ROS_PX4
-MISSION_FILE=$HOME/ROS_PX4/missions/hover_5m.tsv \
-RUN_LABEL=flight_test_01 \
+MISSION_FILE=$HOME/ROS_PX4/missions/Default.tsv \
 START_ENCODER=false \
 MISSION_DIR=$HOME/ROS_PX4/missions \
-SAFETY_MAX_ALTITUDE_M=10.0 \
-SAFETY_WARN_ALTITUDE_M=8.0 \
-SAFETY_MAX_VELOCITY_MS=1.5 \
-SAFETY_LOCAL_RADIUS_M=10.0 \
+SAFETY_MAX_ALTITUDE_M=50.0 \
+SAFETY_WARN_ALTITUDE_M=48.0 \
+SAFETY_MAX_VELOCITY_MS=5.0 \
+SAFETY_LOCAL_RADIUS_M=20.0 \
 scripts/run_dds_mission.sh "$MISSION_FILE"
 ```
 
@@ -671,13 +669,29 @@ The terminal UI's **Select Mission** option lists `.tsv` files from
 `MISSION_DIR`, which defaults to `~/ROS_PX4/missions`. If you select a different
 mission in the UI before takeoff, the executor switches to that TSV.
 
+Flight log folders default to a readable label based on the mission name, such
+as `20260714_161530_real__hover_5m`. For a special test, add a descriptive
+`RUN_LABEL`:
+
+```bash
+RUN_LABEL=real__hover_5m_low_gain scripts/run_dds_mission.sh "$MISSION_FILE"
+```
+
 Wait until the executor reports that it has loaded the mission and has local
-position. A tmux pane opens the terminal mission-control UI.
-Use the arrow keys and Enter in that pane. Check QGC once more for warnings.
+position. A tmux pane opens the terminal mission-control UI, and a browser
+mission-control panel is available at:
+
+```text
+http://JETSON_IP:8080
+```
+
+Use `MISSION_WEB_PORT=8081` or another port if `8080` is already in use. The
+terminal UI remains available in tmux as a fallback. Check QGC once more for
+warnings.
 Then, when the pilot is ready:
 
-1. Select **Switch Offboard** in the terminal UI.
-2. Select **Arm** in the terminal UI. This only arms the vehicle; it does not
+1. Select **Switch Offboard** in the browser or terminal UI.
+2. Select **Arm** in the browser or terminal UI. This only arms the vehicle; it does not
    start the TSV mission.
 3. Select **Select Mission** if you need to change the `.tsv` file before
    takeoff.
@@ -686,11 +700,12 @@ Then, when the pilot is ready:
 5. Keep hands on the controls and watch the flight, QGC status, and tmux panes.
 
 Automatic arming and automatic Offboard selection are deliberately disabled.
-Before takeoff is selected, the executor streams a hold at the current local
-position so Offboard remains available without commanding the first airborne
-waypoint. The mission clock starts only after takeoff is selected, PX4 is armed,
-PX4 is in Offboard, and the vehicle has settled at the first TSV setpoint for
-1.5 seconds.
+The executor does not publish the Offboard setpoint stream until **Switch
+Offboard** is selected in the UI. After that request, it warms a
+current-position hold stream, sends the Offboard mode command, and keeps holding
+the current position until **Takeoff / Start TSV** is selected. The mission
+clock starts only after takeoff is selected, PX4 is armed, PX4 is in Offboard,
+and the vehicle has settled at the first TSV setpoint for 1.5 seconds.
 
 ---
 
@@ -718,9 +733,9 @@ stream makes PX4 invoke the configured Offboard-loss failsafe.
 
 ## 5. Shut down and collect logs
 
-After landing and disarming, select **Shutdown / Save Logs** in the terminal
-mission-control UI. This stops each mission pane cleanly so the logger closes
-its files, then closes the `px4_dds_mission` tmux session.
+After landing and disarming, select **Shutdown / Save Logs** in the browser or
+terminal mission-control UI. This stops each mission pane cleanly so the logger
+closes its files, then closes the `px4_dds_mission` tmux session.
 
 If the UI is not available, run the same shutdown helper from another terminal:
 
@@ -745,9 +760,13 @@ Hardware-flight logs are written under `~/logs/`. Find the newest run with:
 ls -td ~/logs/* | head -1
 ```
 
-Each run contains `flight.csv`, `events.csv`, `metadata.json`, and a copy of the
-mission file. Also download the PX4 `.ulg` log from QGC before changing the
-vehicle or mission configuration.
+Each run contains `flight.csv`, `events.csv`, `commands.csv`, `metadata.json`,
+`summary.txt`, `trajectory_3d.png`, `xy.png`, `height.png`, `x_time.png`,
+`y_time.png`, and a copy of the mission file. The logger also tries to copy the
+newest PX4 `.ulg` from `~/.local/share/logloader/logs` into the same run folder
+when the mission is shut down. If `metadata.json` says `"ulog_file": ""`,
+logloader had not downloaded the PX4 log yet; download it from QGC/logloader and
+copy it into the run folder manually.
 
 ---
 
@@ -899,9 +918,9 @@ ros2 topic list | grep '^/fmu/'
 
 ### PX4 refuses Offboard mode
 
-Confirm that the executor pane is still publishing, local position is valid,
-and PX4 has no preflight or failsafe warnings. Start the launcher before asking
-PX4 to enter Offboard.
+Confirm local position is valid and PX4 has no preflight or failsafe warnings.
+Use the browser or terminal UI's **Switch Offboard** command; the executor only
+starts publishing the Offboard setpoint stream after that request.
 
 ### Mission aborts with LOCAL_POSITION_INVALID
 

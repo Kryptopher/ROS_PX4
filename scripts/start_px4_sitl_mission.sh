@@ -17,7 +17,8 @@ MISSION_NAME="$(basename "$MISSION_FILE" .tsv)"
 RUN_NAME="${RUN_NAME:-${LOGBOOK_LABEL:-$MISSION_NAME}}"
 LOGBOOK_LABEL="sitl__${RUN_NAME}"
 LOGBOOK_RATE_HZ="${LOGBOOK_RATE_HZ:-100}"
-EXECUTOR_RATE_HZ="${EXECUTOR_RATE_HZ:-50.0}"
+EXECUTOR_RATE_HZ="${EXECUTOR_RATE_HZ:-200.0}"
+MISSION_WEB_PORT="${MISSION_WEB_PORT:-8080}"
 SITL_MODE="${SITL_MODE:-remote}"
 SITL_GUI="${SITL_GUI:-false}"
 SITL_REMOTE_PX4_DIR="${SITL_REMOTE_PX4_DIR:-~/PX4-Autopilot}"
@@ -163,7 +164,16 @@ source "$ROS_WS/install/setup.bash"
 ros2 run zed_px4_bridge mission_control_ui --mission-dir "$MISSION_DIR" --kill-sitl-command "$REPO/scripts/kill_sitl.sh"
 " C-m
 
-# Pane 4: Mission state logbook
+# Pane 4: Browser mission-control UI.
+WEB_PANE="$(tmux split-window -v -t "$PX4_PANE" -P -F '#{pane_id}')"
+tmux send-keys -t "$WEB_PANE" "
+sleep 14
+source /opt/ros/humble/setup.bash
+source "$ROS_WS/install/setup.bash"
+ros2 run zed_px4_bridge mission_control_web --mission-dir "$MISSION_DIR" --port "$MISSION_WEB_PORT" --kill-sitl-command "$REPO/scripts/kill_sitl.sh"
+" C-m
+
+# Pane 5: Mission state logbook
 LOGBOOK_PANE="$(tmux split-window -v -t "$AGENT_PANE" -P -F '#{pane_id}')"
 tmux send-keys -t "$LOGBOOK_PANE" "
 sleep 15

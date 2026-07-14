@@ -27,7 +27,7 @@ class MissionExecutorDDS(Node):
         self.declare_parameter(
             'mission_file',
             str(Path.home() / 'ROS_PX4' / 'missions' / 'mission_sitl_test.tsv'))
-        self.declare_parameter('rate_hz', 20.0)
+        self.declare_parameter('rate_hz', 200.0)
         self.declare_parameter('auto_arm', False)
         self.declare_parameter('auto_offboard', False)
         self.declare_parameter('auto_land', False)
@@ -143,8 +143,13 @@ class MissionExecutorDDS(Node):
         self.reported_mission_done = False
         self.reported_waiting_for_start = False
         self.reported_waiting_for_takeoff = False
+        self.reported_waiting_for_offboard_request = False
         self.reported_mission_started = False
         self.takeoff_requested = False
+        self.mission_origin = None
+        self.offboard_requested = False
+        self.offboard_command_sent = False
+        self.offboard_request_time = None
         self.aborted = False
         self.abort_reason = ''
         self.abort_command_sent = False
@@ -218,17 +223,22 @@ class MissionExecutorDDS(Node):
         value = parts[1].strip() if len(parts) > 1 else ''
 
         if command == 'OFFBOARD':
-            self.set_offboard_mode()
+            self.request_offboard_mode()
         elif command == 'ARM':
             self.arm()
         elif command == 'DISARM':
             self.disarm(force=False)
         elif command == 'TAKEOFF':
             if self.start_time is None:
-                self.takeoff_requested = True
-                self.reported_waiting_for_takeoff = False
-                self.publish_event('TAKEOFF_REQUESTED', self.mission_file)
-                self.get_logger().warn('Takeoff requested; executor may now fly the selected TSV mission.')
+                if self.capture_mission_origin():
+                    self.takeoff_requested = True
+                    self.reported_waiting_for_takeoff = False
+                    self.publish_event('TAKEOFF_REQUESTED', self.mission_file)
+                    self.get_logger().warn(
+                        'Takeoff requested; current position is the mission origin '
+                        f'(x={self.mission_origin["x"]:.3f}, y={self.mission_origin["y"]:.3f}, '
+                        f'z={self.mission_origin["z"]:.3f} up).'
+                    )
         elif command == 'LAND':
             self.land()
         elif command == 'RTL':
@@ -257,9 +267,14 @@ class MissionExecutorDDS(Node):
         self.last_active_row = None
         self.reported_waiting_for_start = False
         self.reported_waiting_for_takeoff = False
+        self.reported_waiting_for_offboard_request = False
         self.reported_waiting_for_settle = False
         self.start_settle_begin = None
         self.takeoff_requested = False
+        self.mission_origin = None
+        self.offboard_requested = False
+        self.offboard_command_sent = False
+        self.offboard_request_time = None
         self.publish_event('MISSION_SELECTED', self.mission_file)
         self.get_logger().warn(f'Selected mission: {self.mission_file}')
 
@@ -299,6 +314,37 @@ class MissionExecutorDDS(Node):
 
         self.offboard_pub.publish(msg)
 
+    def capture_mission_origin(self):
+        if self.local_position is None:
+            self.get_logger().error('Cannot start mission: local position is not available.')
+            self.publish_event('TAKEOFF_REJECTED', 'local position unavailable')
+            return False
+        if self.mission_origin is None:
+            self.mission_origin = {
+                'x': float(self.local_position.x),
+                'y': float(self.local_position.y),
+                'z': -float(self.local_position.z),
+            }
+            self.publish_event(
+                'MISSION_ORIGIN',
+                f'x={self.mission_origin["x"]:.6f},'
+                f'y={self.mission_origin["y"]:.6f},'
+                f'z={self.mission_origin["z"]:.6f}',
+            )
+        return True
+
+    def resolve_position_row(self, row):
+        x = float(row['x'])
+        y = float(row['y'])
+        z = float(row['z'])
+        if row.get('absolute_frame', False) or self.mission_origin is None:
+            return x, y, z
+        return (
+            self.mission_origin['x'] + x,
+            self.mission_origin['y'] + y,
+            self.mission_origin['z'] + z,
+        )
+
     def publish_setpoint(self, row):
         msg = TrajectorySetpoint()
         msg.timestamp = self.now_us()
@@ -308,9 +354,10 @@ class MissionExecutorDDS(Node):
         #
         # PX4 local frame is NED:
         # x forward/north, y right/east, z positive DOWN.
-        px4_x = row['x']
-        px4_y = row['y']
-        px4_z = -row['z']
+        local_x, local_y, local_z_up = self.resolve_position_row(row)
+        px4_x = local_x
+        px4_y = local_y
+        px4_z = -local_z_up
 
         if row['mode'] == 'pos':
             msg.position = [float(px4_x), float(px4_y), float(px4_z)]
@@ -358,6 +405,7 @@ class MissionExecutorDDS(Node):
                 'vy': 0.0,
                 'vz': 0.0,
                 'ax': 0.0,
+                'absolute_frame': True,
             })
         return row
 
@@ -402,6 +450,14 @@ class MissionExecutorDDS(Node):
         self.get_logger().warn('Sending OFFBOARD mode command')
         # PX4 custom mode: param1=1, param2=6 for Offboard.
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+
+    def request_offboard_mode(self):
+        self.offboard_requested = True
+        self.offboard_command_sent = False
+        self.offboard_request_time = self.get_clock().now().nanoseconds / 1e9
+        self.reported_waiting_for_offboard_request = False
+        self.publish_event('OFFBOARD_REQUESTED', 'warming setpoint stream before mode command')
+        self.get_logger().warn('Offboard requested; warming setpoint stream before sending mode command.')
 
     def land(self):
         self.get_logger().warn('Sending LAND command')
@@ -456,11 +512,12 @@ class MissionExecutorDDS(Node):
         row = self.rows[0]
         if row['mode'] != 'pos' or self.local_position is None:
             return True, 0.0, 0.0
+        target_x, target_y, target_z = self.resolve_position_row(row)
 
         position_error = math.sqrt(
-            (float(self.local_position.x) - row['x']) ** 2
-            + (float(self.local_position.y) - row['y']) ** 2
-            + (-float(self.local_position.z) - row['z']) ** 2
+            (float(self.local_position.x) - target_x) ** 2
+            + (float(self.local_position.y) - target_y) ** 2
+            + (-float(self.local_position.z) - target_z) ** 2
         )
         speed = math.sqrt(
             float(self.local_position.vx) ** 2
@@ -492,17 +549,37 @@ class MissionExecutorDDS(Node):
         # so Offboard mode is available, but DO NOT start the mission clock yet.
         if self.start_time is None:
             armed_and_offboard = self.is_armed_and_offboard()
+            if self.auto_offboard and not self.offboard_requested:
+                self.request_offboard_mode()
+
+            if not self.offboard_requested and not armed_and_offboard:
+                if not self.reported_waiting_for_offboard_request:
+                    self.get_logger().warn(
+                        'Offboard stream is idle. Select Switch Offboard in the UI when ready.'
+                    )
+                    self.publish_event('WAITING_FOR_OFFBOARD_REQUEST', 'no offboard stream until UI request')
+                    self.reported_waiting_for_offboard_request = True
+                return
+
             row = self.rows[0] if self.takeoff_requested and armed_and_offboard else self.current_position_hold_row()
             mode = row['mode'] if row['mode'] in ['pos', 'vel'] else 'pos'
             self.publish_offboard_control_mode(mode)
             self.publish_setpoint(row)
 
+            if (
+                self.offboard_requested
+                and not self.offboard_command_sent
+                and self.offboard_request_time is not None
+            ):
+                now = self.get_clock().now().nanoseconds / 1e9
+                if now - self.offboard_request_time >= 1.2:
+                    self.set_offboard_mode()
+                    self.offboard_command_sent = True
+
             self.offboard_counter += 1
 
             if self.offboard_counter == int(self.rate_hz * 2.0):
-                if self.auto_offboard:
-                    self.set_offboard_mode()
-                else:
+                if not self.auto_offboard:
                     self.get_logger().warn('auto_offboard disabled. Switch to Offboard manually when ready.')
 
                 if self.auto_arm:
