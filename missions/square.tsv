@@ -1,0 +1,16 @@
+t	type	mode	profile	x	y	z	vx	vy	vz	ax	heading_deg
+0	takeoff	pos	linear	0	0	0	0	0	0	0	0
+5	wp	pos	hold	0	0	10.0	0	0	0	0	0
+10	wp	pos	linear	0	0	10.0	0	0	0	0	0
+20	wp	pos	hold	10.0	0	10.0	0	0	0	0	0
+22	wp	pos	hold	10.0	0	10.0	0	0	0	0	90
+25	wp	pos	linear	10.0	0	10.0	0	0	0	0	90
+35	wp	pos	hold	10.0	10.0	10.0	0	0	0	0	90
+37	wp	pos	hold	10.0	10.0	10.0	0	0	0	0	180
+40	wp	pos	linear	10.0	10.0	10.0	0	0	0	0	180
+50	wp	pos	hold	0	10.0	10.0	0	0	0	0	180
+52	wp	pos	hold	0	10.0	10.0	0	0	0	0	270
+55	wp	pos	linear	0	10.0	10.0	0	0	0	0	270
+65	wp	pos	hold	0	0	10.0	0	0	0	0	270
+67	wp	pos	hold	0	0	10.0	0	0	0	0	0
+70	end	end	end	0	0	0	0	0	0	0	0

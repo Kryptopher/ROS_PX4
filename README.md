@@ -80,17 +80,17 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Start SITL
 
 SITL runs on a laptop by default so Gazebo physics does not overload the
-Raspberry Pi. The Pi continues to run the DDS agent, mission executor, and
+Jetson. The Jetson continues to run the DDS agent, mission executor, and
 mission logbook.
 
 One-time setup:
 
 1. Install and build `PX4-Autopilot` on the laptop.
 2. Enable an SSH server inside the laptop's Linux/WSL environment and make port
-   `22` reachable from the Pi. `run_sitl` expects a Linux shell, not Windows
+   `22` reachable from the Jetson. `run_sitl` expects a Linux shell, not Windows
    PowerShell.
-3. Configure key-based SSH access from the Pi.
-4. Create the Pi-side configuration:
+3. Configure key-based SSH access from the Jetson.
+4. Create the Jetson-side configuration:
 
 ```bash
 mkdir -p ~/.config/ros_px4
@@ -99,15 +99,15 @@ cp ~/ROS_PX4/config/sitl-105.env.example ~/.config/ros_px4/sitl-105.env
 nano ~/.config/ros_px4/sitl.env
 ```
 
-Set `SITL_HOST` to the laptop's SSH target and `SITL_AGENT_IP` to the Pi's IP
-address visible from the laptop. Test the connection from the Pi:
+Set `SITL_HOST` to the laptop's SSH target and `SITL_AGENT_IP` to the Jetson's
+IP address visible from the laptop. Test the connection from the Jetson:
 
 ```bash
 source ~/.config/ros_px4/sitl.env
 ssh "$SITL_HOST" 'test -d ~/PX4-Autopilot && echo ready'
 ```
 
-For the second PC profile, add this alias on the Pi:
+For the second PC profile, add this alias on the Jetson:
 
 ```text
 Host pc-105-sitl
@@ -123,18 +123,18 @@ ssh pc-105-sitl 'test -d ~/PX4-Autopilot && echo ready'
 run_sitl_105
 ```
 
-Then launch from the Pi:
+Then launch from the Jetson:
 
 ```bash
 run_sitl
 ```
 
-The Pi's tmux session displays the remote PX4 terminal alongside the local DDS
+The Jetson's tmux session displays the remote PX4 terminal alongside the local DDS
 agent, mission executor, and mission logbook. PX4's remote DDS client is
-automatically reconnected to the Pi on UDP port `8888`. No physical drone or
+automatically reconnected to the Jetson on UDP port `8888`. No physical drone or
 QGroundControl connection is required.
 
-Run PX4 and Gazebo locally on the Pi only as a fallback:
+Run PX4 and Gazebo locally on the Jetson only as a fallback:
 
 ```bash
 SITL_MODE=local run_sitl
@@ -227,7 +227,7 @@ START_ENCODER=true scripts/run_dds_mission.sh missions/mission_sitl_test.tsv
 
 The launcher starts the mission executor, independent safety monitor, flight
 logger, and payload encoder in a tmux session. Set `START_ENCODER=false` when
-running without the Raspberry Pi encoder hardware.
+running without the Jetson encoder hardware.
 
 For this ARK PAB Jetson, QGroundControl MAVLink is handled by
 `mavlink-router.service` over the Pixhawk USB-C/FCUSB link:

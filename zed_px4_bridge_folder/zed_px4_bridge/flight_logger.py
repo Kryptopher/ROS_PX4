@@ -14,8 +14,12 @@ import rclpy
 from px4_msgs.msg import (
     TrajectorySetpoint,
     VehicleControlMode,
+    VehicleAngularVelocity,
+    VehicleAttitude,
     VehicleLocalPosition,
     VehicleStatus,
+    VehicleThrustSetpoint,
+    VehicleTorqueSetpoint,
 )
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -30,19 +34,24 @@ class FlightLogger(Node):
         self.declare_parameter('log_base_dir', str(Path.home() / 'logs'))
         self.declare_parameter('run_label', 'dds_mission')
         self.declare_parameter('mission_file', '')
-        self.declare_parameter('sample_rate_hz', 50.0)
+        self.declare_parameter('sample_rate_hz', 100.0)
         self.declare_parameter('copy_ulog', True)
         self.declare_parameter('ulog_source_dir', str(Path.home() / '.local/share/logloader/logs'))
         self.declare_parameter('ulog_wait_s', 5.0)
 
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         label = self.get_parameter('run_label').value
+        self.initial_run_label = str(label)
         self.mission_file = self.get_parameter('mission_file').value
         self.run_dir = Path(self.get_parameter('log_base_dir').value) / f'{stamp}_{label}'
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.start_wall_time = time.time()
         self.start_time = self.get_clock().now().nanoseconds / 1e9
         self.local_position = None
+        self.attitude = None
+        self.angular_velocity = None
+        self.thrust_setpoint = None
+        self.torque_setpoint = None
         self.vehicle_status = None
         self.control_mode = None
         self.payload = None
@@ -57,6 +66,10 @@ class FlightLogger(Node):
             'xy_valid', 'z_valid', 'armed', 'offboard', 'nav_state',
             'arming_state', 'failsafe', 'pitch_deg', 'roll_deg',
             'pitch_count', 'roll_count',
+            'roll_rad', 'pitch_rad', 'yaw_rad',
+            'roll_rate_rad_s', 'pitch_rate_rad_s', 'yaw_rate_rad_s',
+            'thrust_command', 'thrust_x', 'thrust_y', 'thrust_z',
+            'roll_torque_command', 'pitch_torque_command', 'yaw_torque_command',
         ])
         self.event_file = open(self.run_dir / 'events.csv', 'w', newline='')
         self.event_writer = csv.writer(self.event_file)
@@ -79,6 +92,18 @@ class FlightLogger(Node):
         self.create_subscription(
             VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1',
             lambda msg: setattr(self, 'local_position', msg), qos)
+        self.create_subscription(
+            VehicleAttitude, '/fmu/out/vehicle_attitude',
+            lambda msg: setattr(self, 'attitude', msg), qos)
+        self.create_subscription(
+            VehicleAngularVelocity, '/fmu/out/vehicle_angular_velocity',
+            lambda msg: setattr(self, 'angular_velocity', msg), qos)
+        self.create_subscription(
+            VehicleThrustSetpoint, '/fmu/out/vehicle_thrust_setpoint',
+            lambda msg: setattr(self, 'thrust_setpoint', msg), qos)
+        self.create_subscription(
+            VehicleTorqueSetpoint, '/fmu/out/vehicle_torque_setpoint',
+            lambda msg: setattr(self, 'torque_setpoint', msg), qos)
         self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status',
             lambda msg: setattr(self, 'vehicle_status', msg), qos)
@@ -106,6 +131,28 @@ class FlightLogger(Node):
 
     def _elapsed(self):
         return self.get_clock().now().nanoseconds / 1e9 - self.start_time
+
+    @staticmethod
+    def _quat_to_euler(q):
+        w, x, y, z = [float(value) for value in q]
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * (w * y - z * x)
+        pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return roll, pitch, yaw
+
+    @staticmethod
+    def _vector3(msg, attr='xyz'):
+        if msg is None:
+            return math.nan, math.nan, math.nan
+        values = getattr(msg, attr, [])
+        return tuple(float(values[index]) for index in range(3))
 
     def _event_cb(self, msg):
         event_type, _, detail = msg.data.partition('|')
@@ -149,6 +196,14 @@ class FlightLogger(Node):
         control = self.control_mode
         payload = list(self.payload.data) if self.payload is not None else []
         payload += [0.0] * (5 - len(payload))
+        roll, pitch, yaw = (
+            self._quat_to_euler(self.attitude.q)
+            if self.attitude is not None else
+            (math.nan, math.nan, math.nan)
+        )
+        roll_rate, pitch_rate, yaw_rate = self._vector3(self.angular_velocity)
+        thrust_x, thrust_y, thrust_z = self._vector3(self.thrust_setpoint)
+        torque_x, torque_y, torque_z = self._vector3(self.torque_setpoint)
         self.flight_writer.writerow([
             f'{self._elapsed():.4f}',
             p.x, p.y, p.z, p.vx, p.vy, p.vz, p.heading,
@@ -159,12 +214,20 @@ class FlightLogger(Node):
             getattr(status, 'arming_state', ''),
             int(getattr(status, 'failsafe', False)),
             *payload[:4],
+            roll, pitch, yaw,
+            roll_rate, pitch_rate, yaw_rate,
+            thrust_z, thrust_x, thrust_y, thrust_z,
+            torque_x, torque_y, torque_z,
         ])
         self.rows += 1
         if self.rows % 50 == 0:
             self.flight_file.flush()
 
     def destroy_node(self):
+        self.flight_file.flush()
+        self.event_file.flush()
+        self.command_file.flush()
+        self._rename_run_dir_for_selected_mission()
         metadata = {
             'run_dir': str(self.run_dir),
             'mission_file': self.mission_file,
@@ -186,6 +249,42 @@ class FlightLogger(Node):
         self.event_file.close()
         self.command_file.close()
         super().destroy_node()
+
+    @staticmethod
+    def _safe_label(value):
+        cleaned = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in value)
+        cleaned = cleaned.strip('_')
+        return cleaned or 'mission'
+
+    def _rename_run_dir_for_selected_mission(self):
+        mission_path = Path(self.mission_file) if self.mission_file else None
+        if mission_path is None or not mission_path.name:
+            return
+
+        selected = self._safe_label(mission_path.stem)
+        initial = self._safe_label(self.initial_run_label)
+        prefix = initial.split('__', 1)[0] if '__' in initial else initial
+        target_label = f'{prefix}__{selected}'
+        current_label = self.run_dir.name.split('_', 2)[-1] if '_' in self.run_dir.name else self.run_dir.name
+        if current_label == target_label:
+            return
+
+        target = self.run_dir.with_name(f'{self.run_dir.name[:15]}_{target_label}')
+        if target == self.run_dir:
+            return
+
+        candidate = target
+        index = 2
+        while candidate.exists():
+            candidate = target.with_name(f'{target.name}_{index}')
+            index += 1
+
+        try:
+            self.run_dir.rename(candidate)
+            self.run_dir = candidate
+            self.get_logger().warn(f'Renamed log folder for selected mission: {self.run_dir}')
+        except Exception as exc:
+            self.get_logger().warn(f'Could not rename log folder for selected mission: {exc}')
 
     def _copy_latest_ulog(self):
         if not bool(self.get_parameter('copy_ulog').value):
@@ -228,13 +327,19 @@ class FlightLogger(Node):
         try:
             from mission_logbook import (
                 write_3d_plot,
+                write_3d_plot_html,
                 mission_start_time,
+                mission_event_markers,
                 mission_row_markers,
                 takeoff_requested_time,
                 write_x_time_plot,
+                write_x_time_plot_html,
                 write_xy_plot,
+                write_xy_plot_html,
                 write_y_time_plot,
+                write_y_time_plot_html,
                 write_z_plot,
+                write_z_plot_html,
             )
         except Exception as exc:
             self.get_logger().warn(f'Could not load plot helpers: {exc}')
@@ -258,21 +363,37 @@ class FlightLogger(Node):
             mission_file = str(copied[0]) if copied else ''
 
         plot_path = self.run_dir / 'trajectory_3d.png'
+        plot_html_path = self.run_dir / 'trajectory_3d.html'
         xy_plot_path = self.run_dir / 'xy.png'
+        xy_html_path = self.run_dir / 'xy.html'
         z_plot_path = self.run_dir / 'height.png'
+        z_html_path = self.run_dir / 'height.html'
         x_time_plot_path = self.run_dir / 'x_time.png'
+        x_time_html_path = self.run_dir / 'x_time.html'
         y_time_plot_path = self.run_dir / 'y_time.png'
-        row_markers = mission_row_markers(mission_file, start_t)
-        if write_3d_plot(plot_path, mission_file, samples, commands, color_split_t, row_markers):
+        y_time_html_path = self.run_dir / 'y_time.html'
+        markers = mission_event_markers(events)
+        time_markers = markers + mission_row_markers(mission_file, start_t)
+        if write_3d_plot(plot_path, mission_file, samples, commands, color_split_t, markers):
             self.get_logger().warn(f'Saved 3D plot: {plot_path}')
-        if write_xy_plot(xy_plot_path, mission_file, samples, commands, color_split_t, row_markers):
+        if write_3d_plot_html(plot_html_path, mission_file, samples, commands, color_split_t, markers):
+            self.get_logger().warn(f'Saved interactive 3D plot: {plot_html_path}')
+        if write_xy_plot(xy_plot_path, mission_file, samples, commands, color_split_t, markers):
             self.get_logger().warn(f'Saved XY plot: {xy_plot_path}')
-        if write_z_plot(z_plot_path, samples, commands, color_split_t, row_markers):
+        if write_xy_plot_html(xy_html_path, mission_file, samples, commands, color_split_t, markers):
+            self.get_logger().warn(f'Saved interactive XY plot: {xy_html_path}')
+        if write_z_plot(z_plot_path, samples, commands, color_split_t, time_markers):
             self.get_logger().warn(f'Saved height plot: {z_plot_path}')
-        if write_x_time_plot(x_time_plot_path, samples, commands, color_split_t, row_markers):
+        if write_z_plot_html(z_html_path, samples, commands, color_split_t, time_markers):
+            self.get_logger().warn(f'Saved interactive height plot: {z_html_path}')
+        if write_x_time_plot(x_time_plot_path, samples, commands, color_split_t, time_markers):
             self.get_logger().warn(f'Saved X time plot: {x_time_plot_path}')
-        if write_y_time_plot(y_time_plot_path, samples, commands, color_split_t, row_markers):
+        if write_x_time_plot_html(x_time_html_path, samples, commands, color_split_t, time_markers):
+            self.get_logger().warn(f'Saved interactive X time plot: {x_time_html_path}')
+        if write_y_time_plot(y_time_plot_path, samples, commands, color_split_t, time_markers):
             self.get_logger().warn(f'Saved Y time plot: {y_time_plot_path}')
+        if write_y_time_plot_html(y_time_html_path, samples, commands, color_split_t, time_markers):
+            self.get_logger().warn(f'Saved interactive Y time plot: {y_time_html_path}')
 
     def _write_summary(self):
         def read_csv(path):
@@ -295,12 +416,19 @@ class FlightLogger(Node):
         start_t = None
         takeoff_t = None
         try:
-            from mission_logbook import mission_row_markers, mission_start_time, takeoff_requested_time
+            from mission_logbook import (
+                mission_event_markers,
+                mission_row_markers,
+                mission_start_time,
+                takeoff_requested_time,
+            )
             start_t = mission_start_time(events)
             takeoff_t = takeoff_requested_time(events)
-            row_markers = mission_row_markers(self.mission_file, start_t)
+            markers = mission_event_markers(events)
+            time_markers = markers + mission_row_markers(self.mission_file, start_t)
         except Exception:
-            row_markers = []
+            markers = []
+            time_markers = []
             pass
         final = samples[-1] if samples else {}
         sample_duration = 0.0
@@ -329,13 +457,19 @@ class FlightLogger(Node):
             stream.write(f'Requested sample rate: {float(self.get_parameter("sample_rate_hz").value):g} Hz\n')
             stream.write(f'Achieved sample rate: {achieved_rate:.3f} Hz\n')
             stream.write(f'3D trajectory plot: {self.run_dir / "trajectory_3d.png"}\n')
+            stream.write(f'Interactive 3D trajectory plot: {self.run_dir / "trajectory_3d.html"}\n')
             stream.write(f'Top-down XY plot: {self.run_dir / "xy.png"}\n')
+            stream.write(f'Interactive top-down XY plot: {self.run_dir / "xy.html"}\n')
             stream.write(f'Height plot: {self.run_dir / "height.png"}\n')
+            stream.write(f'Interactive height plot: {self.run_dir / "height.html"}\n')
             stream.write(f'X vs time plot: {self.run_dir / "x_time.png"}\n')
+            stream.write(f'Interactive X vs time plot: {self.run_dir / "x_time.html"}\n')
             stream.write(f'Y vs time plot: {self.run_dir / "y_time.png"}\n')
+            stream.write(f'Interactive Y vs time plot: {self.run_dir / "y_time.html"}\n')
             stream.write(f'Takeoff requested time: {takeoff_t if takeoff_t is not None else "not recorded"}\n')
             stream.write(f'Mission start time: {start_t if start_t is not None else "not recorded"}\n')
-            stream.write(f'TSV row markers: {len(row_markers)}\n')
+            stream.write(f'Plot event markers: {len(markers)}\n')
+            stream.write(f'Time plot markers: {len(time_markers)}\n')
             stream.write('\nFinal sample:\n')
             for key, value in final.items():
                 stream.write(f'  {key}: {value}\n')

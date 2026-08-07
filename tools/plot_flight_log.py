@@ -7,13 +7,19 @@ from pathlib import Path
 
 from mission_logbook import (
     write_3d_plot,
+    write_3d_plot_html,
+    mission_event_markers,
     mission_row_markers,
     mission_start_time,
     takeoff_requested_time,
     write_x_time_plot,
+    write_x_time_plot_html,
     write_xy_plot,
+    write_xy_plot_html,
     write_y_time_plot,
+    write_y_time_plot_html,
     write_z_plot,
+    write_z_plot_html,
 )
 
 
@@ -45,18 +51,24 @@ def write_plots(run_dir):
     start_t = mission_start_time(events)
     takeoff_t = takeoff_requested_time(events)
     color_split_t = takeoff_t if takeoff_t is not None else start_t
-    row_markers = mission_row_markers(mission_file, start_t)
+    markers = mission_event_markers(events)
+    time_markers = markers + mission_row_markers(mission_file, start_t)
 
     if not samples:
         raise RuntimeError(f"No flight.csv samples found in {run_dir}")
 
     written = []
     outputs = [
-        (run_dir / "trajectory_3d.png", write_3d_plot, (mission_file, samples, commands, color_split_t, row_markers)),
-        (run_dir / "xy.png", write_xy_plot, (mission_file, samples, commands, color_split_t, row_markers)),
-        (run_dir / "height.png", write_z_plot, (samples, commands, color_split_t, row_markers)),
-        (run_dir / "x_time.png", write_x_time_plot, (samples, commands, color_split_t, row_markers)),
-        (run_dir / "y_time.png", write_y_time_plot, (samples, commands, color_split_t, row_markers)),
+        (run_dir / "trajectory_3d.png", write_3d_plot, (mission_file, samples, commands, color_split_t, markers)),
+        (run_dir / "trajectory_3d.html", write_3d_plot_html, (mission_file, samples, commands, color_split_t, markers)),
+        (run_dir / "xy.png", write_xy_plot, (mission_file, samples, commands, color_split_t, markers)),
+        (run_dir / "xy.html", write_xy_plot_html, (mission_file, samples, commands, color_split_t, markers)),
+        (run_dir / "height.png", write_z_plot, (samples, commands, color_split_t, time_markers)),
+        (run_dir / "height.html", write_z_plot_html, (samples, commands, color_split_t, time_markers)),
+        (run_dir / "x_time.png", write_x_time_plot, (samples, commands, color_split_t, time_markers)),
+        (run_dir / "x_time.html", write_x_time_plot_html, (samples, commands, color_split_t, time_markers)),
+        (run_dir / "y_time.png", write_y_time_plot, (samples, commands, color_split_t, time_markers)),
+        (run_dir / "y_time.html", write_y_time_plot_html, (samples, commands, color_split_t, time_markers)),
     ]
     for path, func, args in outputs:
         if func(path, *args):
@@ -70,7 +82,8 @@ def write_summary(run_dir):
     commands = read_csv(run_dir / "commands.csv")
     start_t = mission_start_time(events)
     takeoff_t = takeoff_requested_time(events)
-    row_markers = mission_row_markers(mission_file_for_run(run_dir), start_t)
+    markers = mission_event_markers(events)
+    time_markers = markers + mission_row_markers(mission_file_for_run(run_dir), start_t)
     metadata_path = run_dir / "metadata.json"
     metadata = {}
     if metadata_path.is_file():
@@ -101,13 +114,19 @@ def write_summary(run_dir):
         stream.write(f"Command sample count: {len(commands)}\n")
         stream.write(f"Achieved sample rate: {achieved_rate:.3f} Hz\n")
         stream.write(f"3D trajectory plot: {run_dir / 'trajectory_3d.png'}\n")
+        stream.write(f"Interactive 3D trajectory plot: {run_dir / 'trajectory_3d.html'}\n")
         stream.write(f"Top-down XY plot: {run_dir / 'xy.png'}\n")
+        stream.write(f"Interactive top-down XY plot: {run_dir / 'xy.html'}\n")
         stream.write(f"Height plot: {run_dir / 'height.png'}\n")
+        stream.write(f"Interactive height plot: {run_dir / 'height.html'}\n")
         stream.write(f"X vs time plot: {run_dir / 'x_time.png'}\n")
+        stream.write(f"Interactive X vs time plot: {run_dir / 'x_time.html'}\n")
         stream.write(f"Y vs time plot: {run_dir / 'y_time.png'}\n")
+        stream.write(f"Interactive Y vs time plot: {run_dir / 'y_time.html'}\n")
         stream.write(f"Takeoff requested time: {takeoff_t if takeoff_t is not None else 'not recorded'}\n")
         stream.write(f"Mission start time: {start_t if start_t is not None else 'not recorded'}\n")
-        stream.write(f"TSV row markers: {len(row_markers)}\n")
+        stream.write(f"Plot event markers: {len(markers)}\n")
+        stream.write(f"Time plot markers: {len(time_markers)}\n")
         stream.write("\nFinal sample:\n")
         for key, value in final.items():
             stream.write(f"  {key}: {value}\n")

@@ -157,6 +157,7 @@ class MissionExecutorDDS(Node):
         self.land_command_time = None
         self.start_settle_begin = None
         self.reported_waiting_for_settle = False
+        self.control_relinquished = False
 
         self.get_logger().info(f'Loaded mission: {self.mission_file}')
         self.get_logger().info(f'Rows: {len(self.rows)}')
@@ -227,6 +228,7 @@ class MissionExecutorDDS(Node):
         elif command == 'ARM':
             self.arm()
         elif command == 'DISARM':
+            self.relinquish_control('DISARM_REQUESTED', 'disarm requested by mission control')
             self.disarm(force=False)
         elif command == 'TAKEOFF':
             if self.start_time is None:
@@ -240,8 +242,10 @@ class MissionExecutorDDS(Node):
                         f'z={self.mission_origin["z"]:.3f} up).'
                     )
         elif command == 'LAND':
+            self.relinquish_control('LAND_REQUESTED', 'land requested by mission control')
             self.land()
         elif command == 'RTL':
+            self.relinquish_control('RTL_REQUESTED', 'rtl requested by mission control')
             self.rtl()
         elif command == 'SELECT_MISSION':
             self.select_mission(value)
@@ -277,6 +281,15 @@ class MissionExecutorDDS(Node):
         self.offboard_request_time = None
         self.publish_event('MISSION_SELECTED', self.mission_file)
         self.get_logger().warn(f'Selected mission: {self.mission_file}')
+
+    def is_offboard_enabled(self):
+        if self.vehicle_control_mode is not None:
+            return bool(self.vehicle_control_mode.flag_control_offboard_enabled)
+
+        if self.vehicle_status is not None:
+            return int(self.vehicle_status.nav_state) == 14
+
+        return False
 
     def is_armed_and_offboard(self):
         # Prefer VehicleControlMode because it directly reports armed/offboard control state.
@@ -433,6 +446,17 @@ class MissionExecutorDDS(Node):
         msg.data = str(active).lower()
         self.active_pub.publish(msg)
 
+    def relinquish_control(self, event_type, detail=''):
+        if self.control_relinquished:
+            return
+        self.control_relinquished = True
+        self.publish_active(False)
+        self.publish_event(event_type, detail)
+        self.get_logger().warn(
+            'Mission executor is relinquishing Offboard setpoint control. '
+            'No more Offboard setpoints will be published.'
+        )
+
     def arm(self):
         self.get_logger().warn('Sending ARM command')
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
@@ -539,10 +563,14 @@ class MissionExecutorDDS(Node):
             )
             return
 
+        if self.control_relinquished:
+            return
+
         if self.aborted:
             if not self.abort_command_sent:
                 self.rtl()
                 self.abort_command_sent = True
+                self.relinquish_control('MISSION_ABORT_RELINQUISHED', self.abort_reason)
             return
 
         # Before PX4 is armed and in Offboard, keep streaming the first setpoint
@@ -639,8 +667,20 @@ class MissionExecutorDDS(Node):
                     'MISSION_STARTED',
                     'PX4 armed, Offboard, and settled at first setpoint; t=0',
                 )
-                self.publish_active(True)
-                self.reported_mission_started = True
+            self.publish_active(True)
+            self.reported_mission_started = True
+
+        if self.start_time is not None and not self.is_offboard_enabled():
+            nav_state = (
+                int(self.vehicle_status.nav_state)
+                if self.vehicle_status is not None
+                else 'unknown'
+            )
+            self.relinquish_control(
+                'PILOT_MODE_TAKEOVER',
+                f'PX4 left Offboard; nav_state={nav_state}',
+            )
+            return
 
         elapsed = (self.get_clock().now().nanoseconds / 1e9) - self.start_time
         row = self.get_setpoint_row(elapsed)
@@ -651,7 +691,7 @@ class MissionExecutorDDS(Node):
                 return
 
             self.get_logger().warn(
-                'MISSION COMPLETE - holding final setpoint. Land manually or keep holding.',
+                'MISSION COMPLETE - holding final setpoint while PX4 remains in Offboard.',
                 throttle_duration_sec=5.0,
             )
             if not self.reported_mission_done:
@@ -660,6 +700,11 @@ class MissionExecutorDDS(Node):
                 if self.auto_land:
                     self.land()
                     self.land_command_time = self.get_clock().now().nanoseconds / 1e9
+                    self.relinquish_control(
+                        'AUTO_LAND_RELINQUISHED',
+                        'auto_land requested at mission completion',
+                    )
+                    return
             self.reported_mission_done = True
 
             if (

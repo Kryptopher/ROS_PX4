@@ -17,6 +17,7 @@ MISSION_WEB_PORT="${MISSION_WEB_PORT:-8080}"
 COPY_ULOG="${COPY_ULOG:-true}"
 ULOG_SOURCE_DIR="${ULOG_SOURCE_DIR:-$HOME/.local/share/logloader/logs}"
 ULOG_WAIT_S="${ULOG_WAIT_S:-10.0}"
+FLIGHT_LOG_RATE_HZ="${FLIGHT_LOG_RATE_HZ:-100.0}"
 
 if [[ ! -f "$MISSION_FILE" ]]; then
   echo "Mission file not found: $MISSION_FILE" >&2
@@ -87,6 +88,7 @@ source '$ROS_WS/install/setup.bash'
 ros2 run zed_px4_bridge flight_logger --ros-args \
   -p mission_file:='$MISSION_FILE' \
   -p run_label:='$RUN_LABEL' \
+  -p sample_rate_hz:=$FLIGHT_LOG_RATE_HZ \
   -p copy_ulog:=$COPY_ULOG \
   -p ulog_source_dir:='$ULOG_SOURCE_DIR' \
   -p ulog_wait_s:=$ULOG_WAIT_S

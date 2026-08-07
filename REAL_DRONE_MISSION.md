@@ -659,8 +659,8 @@ START_ENCODER=false \
 MISSION_DIR=$HOME/ROS_PX4/missions \
 SAFETY_MAX_ALTITUDE_M=50.0 \
 SAFETY_WARN_ALTITUDE_M=48.0 \
-SAFETY_MAX_VELOCITY_MS=5.0 \
-SAFETY_LOCAL_RADIUS_M=20.0 \
+SAFETY_MAX_VELOCITY_MS=7.0 \
+SAFETY_LOCAL_RADIUS_M=50.0 \
 scripts/run_dds_mission.sh "$MISSION_FILE"
 ```
 
@@ -711,11 +711,13 @@ and the vehicle has settled at the first TSV setpoint for 1.5 seconds.
 
 ## 4. End or abort the flight
 
-At the `end` row, the executor keeps streaming the final setpoint. It does not
-land or disarm the real vehicle automatically.
+At the `end` row, the executor keeps streaming the final setpoint only while PX4
+remains in Offboard. It does not land or disarm the real vehicle automatically.
 
-Land using QGC or the RC transmitter. Leave the mission processes running until
-the vehicle is on the ground and disarmed.
+Land using QGC or the RC transmitter. If PX4 leaves Offboard because the pilot
+selects Land, RTL, Position, Loiter, or another tested recovery mode, the
+executor stops publishing Offboard setpoints so the transmitter/QGC mode can
+take over cleanly.
 
 If anything looks wrong, the pilot should immediately use the safest available
 recovery action for the situation:
@@ -726,8 +728,9 @@ recovery action for the situation:
 * Use the emergency stop/kill function only for an actual emergency and only
   with full awareness that thrust will stop immediately.
 
-Do not stop the executor while the vehicle is flying. Loss of its setpoint
-stream makes PX4 invoke the configured Offboard-loss failsafe.
+Do not kill the executor as the normal landing method while the vehicle is still
+in Offboard. Use a flight-mode change or the UI's Land/RTL controls so PX4 gets
+a deliberate command and the executor can relinquish control cleanly.
 
 ---
 

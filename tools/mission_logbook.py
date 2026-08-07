@@ -10,6 +10,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 try:
+    import plotly.graph_objects as go
+except ModuleNotFoundError:
+    go = None
+
+try:
     from std_msgs.msg import String
 
     import rclpy
@@ -20,6 +25,10 @@ try:
         VehicleStatus,
         VehicleControlMode,
         VehicleLocalPosition,
+        VehicleAttitude,
+        VehicleAngularVelocity,
+        VehicleThrustSetpoint,
+        VehicleTorqueSetpoint,
         VehicleCommandAck,
         OffboardControlMode,
         TrajectorySetpoint,
@@ -30,6 +39,7 @@ except ModuleNotFoundError:
     Node = object
     QoSProfile = ReliabilityPolicy = DurabilityPolicy = HistoryPolicy = None
     VehicleStatus = VehicleControlMode = VehicleLocalPosition = None
+    VehicleAttitude = VehicleAngularVelocity = VehicleThrustSetpoint = VehicleTorqueSetpoint = None
     VehicleCommandAck = OffboardControlMode = TrajectorySetpoint = None
 
 
@@ -137,6 +147,39 @@ def takeoff_requested_time(events):
     return None
 
 
+def mission_complete_time(events):
+    for row in events or []:
+        event_type = str(row.get("event_type", ""))
+        if event_type in {
+            "MISSION_COMPLETE_HOLDING",
+            "MISSION_EXECUTOR_MISSION_COMPLETE_HOLDING",
+        }:
+            value = finite_float(row.get("t"))
+            if value is not None:
+                return value
+    return None
+
+
+def mission_event_markers(events):
+    markers = []
+    takeoff_t = takeoff_requested_time(events)
+    if takeoff_t is not None:
+        markers.append({
+            "t": takeoff_t,
+            "label": "Takeoff",
+            "detail": f"Takeoff command t={takeoff_t:g}s",
+        })
+
+    complete_t = mission_complete_time(events)
+    if complete_t is not None:
+        markers.append({
+            "t": complete_t,
+            "label": "Complete",
+            "detail": f"Mission complete t={complete_t:g}s",
+        })
+    return markers
+
+
 def closest_time_point(points, target_t):
     if target_t is None or not points:
         return None
@@ -180,8 +223,295 @@ def mission_row_markers(mission_file, mission_start_t):
     return markers
 
 
-def draw_time_markers(draw, row_markers, project, min_t, max_t, min_value, max_value, margin, height, font):
-    for marker in row_markers or []:
+def downsample_sequence(items, max_points=8000):
+    if len(items) <= max_points:
+        return items
+    stride = math.ceil(len(items) / max_points)
+    return items[::stride]
+
+
+def split_xyzt(points, mission_start_t):
+    pre, active = split_timed_points(points, mission_start_t)
+    return pre, active
+
+
+def marker_points_from_timed_path(markers, timed_points):
+    points = []
+    for marker in markers or []:
+        closest = closest_time_point(timed_points, marker.get("t"))
+        if closest is not None:
+            points.append((marker, closest[1]))
+    return points
+
+
+def write_plotly(fig, path):
+    if go is None:
+        return False
+    fig.update_layout(
+        template="plotly_white",
+        hovermode="closest",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=50, r=30, t=80, b=50),
+    )
+    fig.write_html(str(path), include_plotlyjs="cdn")
+    return True
+
+
+def write_3d_plot_html(plot_path, mission_file, samples, commands, mission_start_t=None, markers=None):
+    if go is None:
+        return False
+
+    timed_path = []
+    for sample in flight_samples(samples):
+        t = finite_float(sample.get("t"))
+        point = (
+            finite_float(sample.get("x")),
+            finite_float(sample.get("y")),
+            -finite_float(sample.get("z")) if finite_float(sample.get("z")) is not None else None,
+        )
+        if t is not None and None not in point:
+            timed_path.append((t, point))
+    timed_path = downsample_sequence(timed_path)
+
+    commanded = []
+    for command in commands:
+        t = finite_float(command.get("t"))
+        point = (
+            finite_float(command.get("x")),
+            finite_float(command.get("y")),
+            finite_float(command.get("z_up")),
+        )
+        if t is not None and None not in point:
+            commanded.append((t, point))
+    commanded = downsample_sequence(commanded)
+
+    if not timed_path and not commanded:
+        return False
+
+    fig = go.Figure()
+    pre, active = split_xyzt(timed_path, mission_start_t)
+    for name, data, color in [
+        ("Pre-mission path", pre, "#e87524"),
+        ("Mission path", active, "#16a34a"),
+    ]:
+        if data:
+            fig.add_trace(go.Scatter3d(
+                x=[p[0] for _, p in data],
+                y=[p[1] for _, p in data],
+                z=[p[2] for _, p in data],
+                mode="lines",
+                name=name,
+                line=dict(color=color, width=5),
+                customdata=[t for t, _ in data],
+                hovertemplate="t=%{customdata:.2f}s<br>x=%{x:.3f} m<br>y=%{y:.3f} m<br>z=%{z:.3f} m<extra></extra>",
+            ))
+
+    if commanded:
+        fig.add_trace(go.Scatter3d(
+            x=[p[0] for _, p in commanded],
+            y=[p[1] for _, p in commanded],
+            z=[p[2] for _, p in commanded],
+            mode="lines",
+            name="Streamed command",
+            line=dict(color="#6d28d9", width=4, dash="dash"),
+            customdata=[t for t, _ in commanded],
+            hovertemplate="cmd t=%{customdata:.2f}s<br>x=%{x:.3f} m<br>y=%{y:.3f} m<br>z=%{z:.3f} m<extra></extra>",
+        ))
+
+    event_points = marker_points_from_timed_path(markers, timed_path)
+    if event_points:
+        fig.add_trace(go.Scatter3d(
+            x=[p[0] for _, p in event_points],
+            y=[p[1] for _, p in event_points],
+            z=[p[2] for _, p in event_points],
+            mode="markers+text",
+            name="Takeoff / complete",
+            text=[m["label"] for m, _ in event_points],
+            textposition="top center",
+            marker=dict(color="#2563eb", size=6),
+            customdata=[m["detail"] for m, _ in event_points],
+            hovertemplate="%{customdata}<br>x=%{x:.3f} m<br>y=%{y:.3f} m<br>z=%{z:.3f} m<extra></extra>",
+        ))
+
+    fig.update_layout(
+        title="Interactive 3D Trajectory",
+        scene=dict(
+            xaxis_title="X forward (m)",
+            yaxis_title="Y right (m)",
+            zaxis_title="Z up (m)",
+            aspectmode="data",
+        ),
+    )
+    return write_plotly(fig, plot_path)
+
+
+def write_xy_plot_html(plot_path, mission_file, samples, commands, mission_start_t=None, markers=None):
+    if go is None:
+        return False
+
+    timed_actual = [
+        (finite_float(row.get("t")), (finite_float(row.get("x")), finite_float(row.get("y"))))
+        for row in flight_samples(samples)
+    ]
+    timed_actual = downsample_sequence([(t, p) for t, p in timed_actual if t is not None and None not in p])
+    commanded = [
+        (finite_float(row.get("t")), (finite_float(row.get("x")), finite_float(row.get("y"))))
+        for row in commands
+    ]
+    commanded = downsample_sequence([(t, p) for t, p in commanded if t is not None and None not in p])
+    if not timed_actual and not commanded:
+        return False
+
+    fig = go.Figure()
+    pre, active = split_xyzt(timed_actual, mission_start_t)
+    for name, data, color in [
+        ("Pre-mission path", pre, "#e87524"),
+        ("Mission path", active, "#16a34a"),
+    ]:
+        if data:
+            fig.add_trace(go.Scatter(
+                x=[p[0] for _, p in data],
+                y=[p[1] for _, p in data],
+                mode="lines",
+                name=name,
+                line=dict(color=color, width=3),
+                customdata=[t for t, _ in data],
+                hovertemplate="t=%{customdata:.2f}s<br>x=%{x:.3f} m<br>y=%{y:.3f} m<extra></extra>",
+            ))
+    if commanded:
+        fig.add_trace(go.Scatter(
+            x=[p[0] for _, p in commanded],
+            y=[p[1] for _, p in commanded],
+            mode="lines",
+            name="Streamed command",
+            line=dict(color="#6d28d9", width=3, dash="dash"),
+            customdata=[t for t, _ in commanded],
+            hovertemplate="cmd t=%{customdata:.2f}s<br>x=%{x:.3f} m<br>y=%{y:.3f} m<extra></extra>",
+        ))
+    event_points = marker_points_from_timed_path(markers, timed_actual)
+    if event_points:
+        fig.add_trace(go.Scatter(
+            x=[p[0] for _, p in event_points],
+            y=[p[1] for _, p in event_points],
+            mode="markers+text",
+            name="Takeoff / complete",
+            text=[m["label"] for m, _ in event_points],
+            textposition="top center",
+            marker=dict(color="#2563eb", size=10),
+            customdata=[m["detail"] for m, _ in event_points],
+            hovertemplate="%{customdata}<br>x=%{x:.3f} m<br>y=%{y:.3f} m<extra></extra>",
+        ))
+    fig.update_layout(
+        title="Interactive Top-Down XY Position",
+        xaxis_title="X forward (m)",
+        yaxis_title="Y right (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+    )
+    return write_plotly(fig, plot_path)
+
+
+def add_time_marker_shapes(fig, markers, y_min, y_max):
+    for marker in markers or []:
+        t = marker.get("t")
+        if t is None:
+            continue
+        fig.add_shape(
+            type="line",
+            x0=t,
+            x1=t,
+            y0=y_min,
+            y1=y_max,
+            line=dict(color="#2563eb", width=1),
+        )
+        fig.add_annotation(
+            x=t,
+            y=y_max,
+            text=marker.get("label", ""),
+            showarrow=False,
+            yshift=8,
+            textangle=-90,
+            font=dict(color="#1747a6", size=11),
+        )
+
+
+def write_time_plot_html(plot_path, samples, commands, value_name, actual_label, command_key, mission_start_t=None, markers=None):
+    if go is None:
+        return False
+
+    if value_name == "z":
+        actual = [
+            (finite_float(row.get("t")), -finite_float(row.get("z")) if finite_float(row.get("z")) is not None else None)
+            for row in flight_samples(samples)
+        ]
+        title = "Interactive Height vs Time"
+        y_title = "Z up (m)"
+    else:
+        actual = [
+            (finite_float(row.get("t")), finite_float(row.get(value_name)))
+            for row in flight_samples(samples)
+        ]
+        title = f"Interactive {value_name.upper()} Position vs Time"
+        y_title = actual_label
+
+    actual = downsample_sequence([p for p in actual if None not in p])
+    commanded = [
+        (finite_float(row.get("t")), finite_float(row.get(command_key)))
+        for row in commands
+    ]
+    commanded = downsample_sequence([p for p in commanded if None not in p])
+    points = actual + commanded
+    if not points:
+        return False
+
+    y_min = min(p[1] for p in points)
+    y_max = max(p[1] for p in points)
+    pad = max(y_max - y_min, 0.5) * 0.1
+    y_min -= pad
+    y_max += pad
+
+    fig = go.Figure()
+    if commanded:
+        fig.add_trace(go.Scatter(
+            x=[t for t, _ in commanded],
+            y=[v for _, v in commanded],
+            mode="lines",
+            name="Streamed command",
+            line=dict(color="#7c3aed", width=2),
+            hovertemplate="cmd t=%{x:.2f}s<br>value=%{y:.3f} m<extra></extra>",
+        ))
+    pre, active = split_timed_points([(t, (t, v)) for t, v in actual], mission_start_t)
+    for name, data, color in [
+        ("Pre-mission", pre, "#e87524"),
+        ("Mission", active, "#16a34a"),
+    ]:
+        if data:
+            fig.add_trace(go.Scatter(
+                x=[p[0] for _, p in data],
+                y=[p[1] for _, p in data],
+                mode="lines",
+                name=name,
+                line=dict(color=color, width=3),
+                hovertemplate="t=%{x:.2f}s<br>value=%{y:.3f} m<extra></extra>",
+            ))
+    add_time_marker_shapes(fig, markers, y_min, y_max)
+    fig.update_layout(title=title, xaxis_title="Log time (s)", yaxis_title=y_title, yaxis_range=[y_min, y_max])
+    return write_plotly(fig, plot_path)
+
+
+def write_z_plot_html(plot_path, samples, commands, mission_start_t=None, row_markers=None):
+    return write_time_plot_html(plot_path, samples, commands, "z", "Z up (m)", "z_up", mission_start_t, row_markers)
+
+
+def write_x_time_plot_html(plot_path, samples, commands, mission_start_t=None, row_markers=None):
+    return write_time_plot_html(plot_path, samples, commands, "x", "X forward (m)", "x", mission_start_t, row_markers)
+
+
+def write_y_time_plot_html(plot_path, samples, commands, mission_start_t=None, row_markers=None):
+    return write_time_plot_html(plot_path, samples, commands, "y", "Y right (m)", "y", mission_start_t, row_markers)
+
+
+def draw_time_markers(draw, markers, project, min_t, max_t, min_value, max_value, margin, height, font):
+    for marker in markers or []:
         t = marker["t"]
         if not (min_t <= t <= max_t):
             continue
@@ -190,11 +520,11 @@ def draw_time_markers(draw, row_markers, project, min_t, max_t, min_value, max_v
         draw.text((x + 4, margin + 4), marker["label"], fill="#1747a6", font=font)
 
 
-def draw_spatial_row_markers(draw, row_markers, timed_points, project, font):
-    if not row_markers or not timed_points:
+def draw_spatial_row_markers(draw, markers, timed_points, project, font):
+    if not markers or not timed_points:
         return
     used = []
-    for marker in row_markers:
+    for marker in markers:
         closest = closest_time_point(timed_points, marker["t"])
         if closest is None:
             continue
@@ -241,8 +571,8 @@ def draw_dashed_polyline(draw, points, fill, width=5, dash_length=14, gap_length
 
 
 def write_3d_plot(plot_path, mission_file, samples, commands, mission_start_t=None, row_markers=None):
-    waypoints = load_mission_waypoints(mission_file)
-    row_markers = row_markers if row_markers is not None else mission_row_markers(mission_file, mission_start_t)
+    waypoints = []
+    row_markers = row_markers or []
     path = []
     timed_path = []
     for sample in flight_samples(samples):
@@ -359,25 +689,19 @@ def write_3d_plot(plot_path, mission_file, samples, commands, mission_start_t=No
             width=6,
         )
 
-    for index, waypoint in enumerate(waypoints, start=1):
-        px, py = project(waypoint)
-        draw.ellipse((px - 10, py - 10, px + 10, py + 10), fill="#2563eb", outline="white", width=3)
-        draw.text((px + 11, py - 10), f"WP{index}", fill="#1747a6", font=font)
     draw_spatial_row_markers(draw, row_markers, timed_path, project, font)
     draw.text((margin, 35), "Mission Commands and Recorded Flight Path", fill="#101828", font=title_font)
-    draw.ellipse((margin + 14, 78, margin + 28, 92), fill="#2563eb")
-    draw.text((margin + 55, 78), "Mission waypoints", fill="#344054", font=font)
-    draw_dashed_polyline(draw, [(margin + 260, 85), (margin + 305, 85)], fill="#6d28d9", width=6)
-    draw.text((margin + 315, 78), "Streamed command", fill="#344054", font=font)
-    draw.line([(margin + 560, 85), (margin + 605, 85)], fill="#e87524", width=5)
-    draw.text((margin + 615, 78), "Pre-mission path", fill="#344054", font=font)
-    draw.line([(margin + 805, 85), (margin + 850, 85)], fill="#16a34a", width=5)
-    draw.text((margin + 860, 78), "Mission path", fill="#344054", font=font)
-    draw.ellipse((margin + 1045, 78, margin + 1059, 92), fill="#2563eb")
-    draw.text((margin + 1070, 78), "TSV row", fill="#344054", font=font)
+    draw_dashed_polyline(draw, [(margin + 14, 85), (margin + 59, 85)], fill="#6d28d9", width=6)
+    draw.text((margin + 70, 78), "Streamed command", fill="#344054", font=font)
+    draw.line([(margin + 315, 85), (margin + 360, 85)], fill="#e87524", width=5)
+    draw.text((margin + 370, 78), "Pre-mission path", fill="#344054", font=font)
+    draw.line([(margin + 560, 85), (margin + 605, 85)], fill="#16a34a", width=5)
+    draw.text((margin + 615, 78), "Mission path", fill="#344054", font=font)
+    draw.ellipse((margin + 800, 78, margin + 814, 92), fill="#2563eb")
+    draw.text((margin + 825, 78), "Takeoff / complete", fill="#344054", font=font)
     draw.text(
         (margin, height - 45),
-        f"Waypoints: {len(waypoints)}   Command samples: {len(commanded_path)}   Recorded samples: {len(path)}",
+        f"Command samples: {len(commanded_path)}   Recorded samples: {len(path)}",
         fill="#667085",
         font=font,
     )
@@ -387,8 +711,8 @@ def write_3d_plot(plot_path, mission_file, samples, commands, mission_start_t=No
 
 
 def write_xy_plot(plot_path, mission_file, samples, commands, mission_start_t=None, row_markers=None):
-    waypoints = load_mission_waypoints(mission_file)
-    row_markers = row_markers if row_markers is not None else mission_row_markers(mission_file, mission_start_t)
+    waypoints = []
+    row_markers = row_markers or []
     timed_actual = [
         (finite_float(row.get("t")), (finite_float(row.get("x")), finite_float(row.get("y"))))
         for row in flight_samples(samples)
@@ -442,22 +766,16 @@ def write_xy_plot(plot_path, mission_file, samples, commands, mission_start_t=No
             draw.text((px + 10, py - 10), label, fill=color, font=font)
     if len(commanded) > 1:
         draw_dashed_polyline(draw, [project(p) for p in commanded], fill="#6d28d9", width=6)
-    for index, waypoint in enumerate(waypoints, start=1):
-        px, py = project(waypoint[:2])
-        draw.ellipse((px - 9, py - 9, px + 9, py + 9), fill="#2563eb", outline="white", width=3)
-        draw.text((px + 10, py - 10), f"WP{index}", fill="#1747a6", font=font)
     draw_spatial_row_markers(draw, row_markers, timed_actual, project, font)
     draw.text((margin, 35), "Top-Down XY Position", fill="#101828", font=title_font)
-    draw.ellipse((margin + 14, 83, margin + 28, 97), fill="#2563eb")
-    draw.text((margin + 55, 81), "Mission waypoints", fill="#344054", font=font)
-    draw_dashed_polyline(draw, [(margin + 260, 90), (margin + 305, 90)], fill="#6d28d9", width=6)
-    draw.text((margin + 315, 81), "Streamed command", fill="#344054", font=font)
-    draw.line([(margin + 560, 90), (margin + 605, 90)], fill="#e87524", width=5)
-    draw.text((margin + 615, 81), "Pre-mission path", fill="#344054", font=font)
-    draw.line([(margin + 805, 90), (margin + 850, 90)], fill="#16a34a", width=5)
-    draw.text((margin + 860, 81), "Mission path", fill="#344054", font=font)
-    draw.ellipse((margin + 1045, 83, margin + 1059, 97), fill="#2563eb")
-    draw.text((margin + 1070, 81), "TSV row", fill="#344054", font=font)
+    draw_dashed_polyline(draw, [(margin + 14, 90), (margin + 59, 90)], fill="#6d28d9", width=6)
+    draw.text((margin + 70, 81), "Streamed command", fill="#344054", font=font)
+    draw.line([(margin + 315, 90), (margin + 360, 90)], fill="#e87524", width=5)
+    draw.text((margin + 370, 81), "Pre-mission path", fill="#344054", font=font)
+    draw.line([(margin + 560, 90), (margin + 605, 90)], fill="#16a34a", width=5)
+    draw.text((margin + 615, 81), "Mission path", fill="#344054", font=font)
+    draw.ellipse((margin + 800, 83, margin + 814, 97), fill="#2563eb")
+    draw.text((margin + 825, 81), "Takeoff / complete", fill="#344054", font=font)
     draw.text((margin, height - 45), "X forward (mirrored to Gazebo view)    Y right", fill="#667085", font=font)
     image.save(plot_path)
     return True
@@ -521,7 +839,7 @@ def write_z_plot(plot_path, samples, commands, mission_start_t=None, row_markers
     draw.line([(margin + 530, 90), (margin + 575, 90)], fill="#16a34a", width=5)
     draw.text((margin + 585, 81), "Mission", fill="#344054", font=font)
     draw.line([(margin + 710, 90), (margin + 755, 90)], fill="#2563eb", width=3)
-    draw.text((margin + 765, 81), "TSV row", fill="#344054", font=font)
+    draw.text((margin + 765, 81), "Events / TSV rows", fill="#344054", font=font)
     image.save(plot_path)
     return True
 
@@ -590,7 +908,7 @@ def write_axis_time_plot(plot_path, samples, commands, axis, mission_start_t=Non
     draw.line([(margin + 530, 90), (margin + 575, 90)], fill="#16a34a", width=5)
     draw.text((margin + 585, 81), "Mission", fill="#344054", font=font)
     draw.line([(margin + 710, 90), (margin + 755, 90)], fill="#2563eb", width=3)
-    draw.text((margin + 765, 81), "TSV row", fill="#344054", font=font)
+    draw.text((margin + 765, 81), "Events / TSV rows", fill="#344054", font=font)
     image.save(plot_path)
     return True
 
@@ -638,6 +956,16 @@ class MissionLogbook(Node):
 
         self.create_subscription(VehicleControlMode, "/fmu/out/vehicle_control_mode", self.vehicle_control_mode_cb, qos)
         self.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position", self.local_position_cb, qos)
+        self.create_subscription(VehicleAttitude, "/fmu/out/vehicle_attitude", self.vehicle_attitude_cb, qos)
+        self.create_subscription(
+            VehicleAngularVelocity, "/fmu/out/vehicle_angular_velocity", self.vehicle_angular_velocity_cb, qos
+        )
+        self.create_subscription(
+            VehicleThrustSetpoint, "/fmu/out/vehicle_thrust_setpoint", self.vehicle_thrust_setpoint_cb, qos
+        )
+        self.create_subscription(
+            VehicleTorqueSetpoint, "/fmu/out/vehicle_torque_setpoint", self.vehicle_torque_setpoint_cb, qos
+        )
         self.create_subscription(VehicleCommandAck, "/fmu/out/vehicle_command_ack", self.command_ack_cb, qos)
         self.create_subscription(OffboardControlMode, "/fmu/in/offboard_control_mode", self.offboard_control_mode_cb, qos)
         self.create_subscription(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", self.trajectory_setpoint_cb, qos)
@@ -653,6 +981,21 @@ class MissionLogbook(Node):
 
     def elapsed(self):
         return (self.get_clock().now().nanoseconds / 1e9) - self.start_ros_time
+
+    @staticmethod
+    def quat_to_euler(q):
+        w, x, y, z = [float(value) for value in q]
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * (w * y - z * x)
+        pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return roll, pitch, yaw
 
     def log_event(self, event_type, detail):
         t = self.elapsed()
@@ -715,6 +1058,28 @@ class MissionLogbook(Node):
         self.last["vy"] = float(msg.vy)
         self.last["vz"] = float(msg.vz)
         self.last["heading_deg"] = math.degrees(float(msg.heading)) % 360.0
+
+    def vehicle_attitude_cb(self, msg):
+        roll, pitch, yaw = self.quat_to_euler(msg.q)
+        self.last["roll_rad"] = roll
+        self.last["pitch_rad"] = pitch
+        self.last["yaw_rad"] = yaw
+
+    def vehicle_angular_velocity_cb(self, msg):
+        self.last["roll_rate_rad_s"] = float(msg.xyz[0])
+        self.last["pitch_rate_rad_s"] = float(msg.xyz[1])
+        self.last["yaw_rate_rad_s"] = float(msg.xyz[2])
+
+    def vehicle_thrust_setpoint_cb(self, msg):
+        self.last["thrust_x"] = float(msg.xyz[0])
+        self.last["thrust_y"] = float(msg.xyz[1])
+        self.last["thrust_z"] = float(msg.xyz[2])
+        self.last["thrust_command"] = float(msg.xyz[2])
+
+    def vehicle_torque_setpoint_cb(self, msg):
+        self.last["roll_torque_command"] = float(msg.xyz[0])
+        self.last["pitch_torque_command"] = float(msg.xyz[1])
+        self.last["yaw_torque_command"] = float(msg.xyz[2])
 
     def command_ack_cb(self, msg):
         command = getattr(msg, "command", None)
@@ -788,6 +1153,19 @@ class MissionLogbook(Node):
             "vy": self.last.get("vy", ""),
             "vz": self.last.get("vz", ""),
             "heading_deg": self.last.get("heading_deg", ""),
+            "roll_rad": self.last.get("roll_rad", ""),
+            "pitch_rad": self.last.get("pitch_rad", ""),
+            "yaw_rad": self.last.get("yaw_rad", ""),
+            "roll_rate_rad_s": self.last.get("roll_rate_rad_s", ""),
+            "pitch_rate_rad_s": self.last.get("pitch_rate_rad_s", ""),
+            "yaw_rate_rad_s": self.last.get("yaw_rate_rad_s", ""),
+            "thrust_command": self.last.get("thrust_command", ""),
+            "thrust_x": self.last.get("thrust_x", ""),
+            "thrust_y": self.last.get("thrust_y", ""),
+            "thrust_z": self.last.get("thrust_z", ""),
+            "roll_torque_command": self.last.get("roll_torque_command", ""),
+            "pitch_torque_command": self.last.get("pitch_torque_command", ""),
+            "yaw_torque_command": self.last.get("yaw_torque_command", ""),
         })
 
     def duration_timer_cb(self):
@@ -800,11 +1178,16 @@ class MissionLogbook(Node):
         samples_path = Path(str(self.base_path) + "_samples.csv")
         summary_path = Path(str(self.base_path) + "_summary.txt")
         plot_path = Path(str(self.base_path) + "_trajectory_3d.png")
+        plot_html_path = Path(str(self.base_path) + "_trajectory_3d.html")
         commands_path = Path(str(self.base_path) + "_commands.csv")
         xy_plot_path = Path(str(self.base_path) + "_xy.png")
+        xy_html_path = Path(str(self.base_path) + "_xy.html")
         z_plot_path = Path(str(self.base_path) + "_height.png")
+        z_html_path = Path(str(self.base_path) + "_height.html")
         x_time_plot_path = Path(str(self.base_path) + "_x_time.png")
+        x_time_html_path = Path(str(self.base_path) + "_x_time.html")
         y_time_plot_path = Path(str(self.base_path) + "_y_time.png")
+        y_time_html_path = Path(str(self.base_path) + "_y_time.html")
 
         with open(events_path, "w", newline="") as f:
             writer = csv.DictWriter(
@@ -835,6 +1218,19 @@ class MissionLogbook(Node):
             "vy",
             "vz",
             "heading_deg",
+            "roll_rad",
+            "pitch_rad",
+            "yaw_rad",
+            "roll_rate_rad_s",
+            "pitch_rate_rad_s",
+            "yaw_rate_rad_s",
+            "thrust_command",
+            "thrust_x",
+            "thrust_y",
+            "thrust_z",
+            "roll_torque_command",
+            "pitch_torque_command",
+            "yaw_torque_command",
         ]
         with open(samples_path, "w", newline="") as f:
             writer = csv.DictWriter(
@@ -864,7 +1260,8 @@ class MissionLogbook(Node):
         start_t = mission_start_time(self.events)
         takeoff_t = takeoff_requested_time(self.events)
         color_split_t = takeoff_t if takeoff_t is not None else start_t
-        row_markers = mission_row_markers(self.mission_file, start_t)
+        markers = mission_event_markers(self.events)
+        time_markers = markers + mission_row_markers(self.mission_file, start_t)
 
         with open(summary_path, "w") as f:
             f.write("Mission Logbook Summary\n")
@@ -877,27 +1274,43 @@ class MissionLogbook(Node):
             f.write(f"Requested sample rate: {self.sample_rate_hz:g} Hz\n")
             f.write(f"Achieved sample rate: {achieved_rate:.3f} Hz\n")
             f.write(f"3D trajectory plot: {plot_path}\n")
+            f.write(f"Interactive 3D trajectory plot: {plot_html_path}\n")
             f.write(f"Top-down XY plot: {xy_plot_path}\n")
+            f.write(f"Interactive top-down XY plot: {xy_html_path}\n")
             f.write(f"Height plot: {z_plot_path}\n")
+            f.write(f"Interactive height plot: {z_html_path}\n")
             f.write(f"X vs time plot: {x_time_plot_path}\n")
+            f.write(f"Interactive X vs time plot: {x_time_html_path}\n")
             f.write(f"Y vs time plot: {y_time_plot_path}\n")
+            f.write(f"Interactive Y vs time plot: {y_time_html_path}\n")
             f.write(f"Takeoff requested time: {takeoff_t if takeoff_t is not None else 'not recorded'}\n")
             f.write(f"Mission start time: {start_t if start_t is not None else 'not recorded'}\n")
-            f.write(f"TSV row markers: {len(row_markers)}\n")
+            f.write(f"Plot event markers: {len(markers)}\n")
+            f.write(f"Time plot markers: {len(time_markers)}\n")
             f.write("\nFinal sample:\n")
             for k, v in final.items():
                 f.write(f"  {k}: {v}\n")
 
-        if write_3d_plot(plot_path, self.mission_file, self.samples, self.commands, color_split_t, row_markers):
+        if write_3d_plot(plot_path, self.mission_file, self.samples, self.commands, color_split_t, markers):
             self.get_logger().warn(f"Saved 3D plot: {plot_path}")
-        if write_xy_plot(xy_plot_path, self.mission_file, self.samples, self.commands, color_split_t, row_markers):
+        if write_3d_plot_html(plot_html_path, self.mission_file, self.samples, self.commands, color_split_t, markers):
+            self.get_logger().warn(f"Saved interactive 3D plot: {plot_html_path}")
+        if write_xy_plot(xy_plot_path, self.mission_file, self.samples, self.commands, color_split_t, markers):
             self.get_logger().warn(f"Saved XY plot: {xy_plot_path}")
-        if write_z_plot(z_plot_path, self.samples, self.commands, color_split_t, row_markers):
+        if write_xy_plot_html(xy_html_path, self.mission_file, self.samples, self.commands, color_split_t, markers):
+            self.get_logger().warn(f"Saved interactive XY plot: {xy_html_path}")
+        if write_z_plot(z_plot_path, self.samples, self.commands, color_split_t, time_markers):
             self.get_logger().warn(f"Saved height plot: {z_plot_path}")
-        if write_x_time_plot(x_time_plot_path, self.samples, self.commands, color_split_t, row_markers):
+        if write_z_plot_html(z_html_path, self.samples, self.commands, color_split_t, time_markers):
+            self.get_logger().warn(f"Saved interactive height plot: {z_html_path}")
+        if write_x_time_plot(x_time_plot_path, self.samples, self.commands, color_split_t, time_markers):
             self.get_logger().warn(f"Saved X time plot: {x_time_plot_path}")
-        if write_y_time_plot(y_time_plot_path, self.samples, self.commands, color_split_t, row_markers):
+        if write_x_time_plot_html(x_time_html_path, self.samples, self.commands, color_split_t, time_markers):
+            self.get_logger().warn(f"Saved interactive X time plot: {x_time_html_path}")
+        if write_y_time_plot(y_time_plot_path, self.samples, self.commands, color_split_t, time_markers):
             self.get_logger().warn(f"Saved Y time plot: {y_time_plot_path}")
+        if write_y_time_plot_html(y_time_html_path, self.samples, self.commands, color_split_t, time_markers):
+            self.get_logger().warn(f"Saved interactive Y time plot: {y_time_html_path}")
         self.get_logger().warn(f"Saved commands: {commands_path}")
         self.get_logger().warn(f"Saved events:  {events_path}")
         self.get_logger().warn(f"Saved samples: {samples_path}")

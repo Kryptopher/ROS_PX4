@@ -22,7 +22,10 @@ signal_remote_simulation() {
     if [[ "${SITL_MODE:-remote}" == "remote" && -n "${SITL_HOST:-}" ]]; then
         ssh -o BatchMode=yes -o ConnectTimeout=3 "$SITL_HOST" \
             "pkill -$signal -x px4 2>/dev/null || true; \
+             pkill -$signal -f PX4-Autopilot 2>/dev/null || true; \
+             pkill -$signal -f 'ruby.*gz' 2>/dev/null || true; \
              pkill -$signal -f '^gz sim( |$)' 2>/dev/null || true; \
+             pkill -$signal -x gz 2>/dev/null || true; \
              pkill -$signal -x gzserver 2>/dev/null || true; \
              pkill -$signal -x gzclient 2>/dev/null || true" \
             2>/dev/null || true

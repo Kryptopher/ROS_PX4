@@ -11,7 +11,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
-MISSION_FILE="${MISSION_FILE:-$REPO/missions/mission_sitl_test.tsv}"
+MISSION_FILE="${MISSION_FILE:-$REPO/missions/Default.tsv}"
 MISSION_DIR="${MISSION_DIR:-$REPO/missions}"
 MISSION_NAME="$(basename "$MISSION_FILE" .tsv)"
 RUN_NAME="${RUN_NAME:-${LOGBOOK_LABEL:-$MISSION_NAME}}"
@@ -23,6 +23,7 @@ SITL_MODE="${SITL_MODE:-remote}"
 SITL_GUI="${SITL_GUI:-false}"
 SITL_REMOTE_PX4_DIR="${SITL_REMOTE_PX4_DIR:-~/PX4-Autopilot}"
 SITL_AGENT_IP="${SITL_AGENT_IP:-}"
+KILL_SITL_COMMAND="SITL_CONFIG_FILE='$CONFIG_FILE' '$REPO/scripts/kill_sitl.sh'"
 
 px4_ipv4_param_value() {
   local ip="$1"
@@ -43,18 +44,18 @@ if [[ "$SITL_MODE" == "remote" ]]; then
   if [[ -z "${SITL_HOST:-}" ]]; then
     echo "Remote SITL is the default, but SITL_HOST is not configured." >&2
     echo "Create $CONFIG_FILE from $REPO/config/sitl.env.example." >&2
-    echo "Use SITL_MODE=local run_sitl to run SITL on the Pi." >&2
+    echo "Use SITL_MODE=local run_sitl to run SITL on the Jetson." >&2
     exit 1
   fi
 
   if [[ -z "$SITL_AGENT_IP" ]]; then
     echo "SITL_AGENT_IP is not configured in $CONFIG_FILE." >&2
-    echo "Set it to the Pi IP address reachable from the laptop." >&2
+    echo "Set it to the Jetson IP address reachable from the laptop." >&2
     exit 1
   fi
 
   if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$SITL_HOST" true; then
-    echo "Cannot SSH into $SITL_HOST from the Pi." >&2
+    echo "Cannot SSH into $SITL_HOST from the Jetson." >&2
     echo "Enable the laptop/WSL SSH server and configure key-based access." >&2
     exit 1
   fi
@@ -70,7 +71,10 @@ if [[ "$SITL_MODE" == "remote" ]]; then
   # refuses to start when another instance server is still alive.
   ssh -o BatchMode=yes -o ConnectTimeout=5 "$SITL_HOST" \
     "pkill -INT -x px4 2>/dev/null || true; \
+     pkill -INT -f PX4-Autopilot 2>/dev/null || true; \
+     pkill -INT -f 'ruby.*gz' 2>/dev/null || true; \
      pkill -INT -f '^gz sim( |$)' 2>/dev/null || true; \
+     pkill -INT -x gz 2>/dev/null || true; \
      pkill -INT -x gzserver 2>/dev/null || true; \
      pkill -INT -x gzclient 2>/dev/null || true" \
     2>/dev/null || true
@@ -103,6 +107,7 @@ tmux new-session -d -s "$SESSION" -n sitl
 AGENT_PANE="$(tmux display-message -p -t "$SESSION":0.0 '#{pane_id}')"
 
 # Pane 0: MicroXRCEAgent
+systemctl --user stop dds-agent.service 2>/dev/null || true
 tmux send-keys -t "$AGENT_PANE" '
 MicroXRCEAgent udp4 -p 8888
 ' C-m
@@ -113,7 +118,7 @@ tmux send-keys -t "$PX4_PANE" '
 '"${PX4_SITL_COMMAND}"'
 ' C-m
 
-# Allow SITL missions without QGroundControl and route remote PX4 DDS to the Pi.
+# Allow SITL missions without QGroundControl and route remote PX4 DDS to the Jetson.
 (
   for _ in $(seq 1 180); do
     if tmux capture-pane -p -t "$PX4_PANE" -S -20 | grep -q 'pxh>'; then
@@ -126,9 +131,19 @@ tmux send-keys -t "$PX4_PANE" '
   # address.  In remote SITL, reconnect it after startup so it reaches the
   # MicroXRCEAgent running on this Jetson.
   if [[ "$SITL_MODE" == "remote" ]]; then
+    tmux send-keys -t "$PX4_PANE" "param set UXRCE_DDS_SYNCT 0" C-m
+    tmux send-keys -t "$PX4_PANE" "param set CBRK_SUPPLY_CHK 894281" C-m
+    tmux send-keys -t "$PX4_PANE" "param set COM_RC_IN_MODE 4" C-m
+    tmux send-keys -t "$PX4_PANE" "param set NAV_DLL_ACT 0" C-m
+    tmux send-keys -t "$PX4_PANE" "param set COM_DL_LOSS_T -1" C-m
     tmux send-keys -t "$PX4_PANE" "uxrce_dds_client stop" C-m
     tmux send-keys -t "$PX4_PANE" \
       "uxrce_dds_client start -t udp -h $SITL_AGENT_IP -p 8888" C-m
+  else
+    tmux send-keys -t "$PX4_PANE" "param set CBRK_SUPPLY_CHK 894281" C-m
+    tmux send-keys -t "$PX4_PANE" "param set COM_RC_IN_MODE 4" C-m
+    tmux send-keys -t "$PX4_PANE" "param set NAV_DLL_ACT 0" C-m
+    tmux send-keys -t "$PX4_PANE" "param set COM_DL_LOSS_T -1" C-m
   fi
 
   tmux send-keys -t "$PX4_PANE" "param set NAV_DLL_ACT 0" C-m
@@ -161,7 +176,7 @@ tmux send-keys -t "$UI_PANE" "
 sleep 14
 source /opt/ros/humble/setup.bash
 source "$ROS_WS/install/setup.bash"
-ros2 run zed_px4_bridge mission_control_ui --mission-dir "$MISSION_DIR" --kill-sitl-command "$REPO/scripts/kill_sitl.sh"
+ros2 run zed_px4_bridge mission_control_ui --mission-dir "$MISSION_DIR" --kill-sitl-command \"$KILL_SITL_COMMAND\"
 " C-m
 
 # Pane 4: Browser mission-control UI.
@@ -170,7 +185,7 @@ tmux send-keys -t "$WEB_PANE" "
 sleep 14
 source /opt/ros/humble/setup.bash
 source "$ROS_WS/install/setup.bash"
-ros2 run zed_px4_bridge mission_control_web --mission-dir "$MISSION_DIR" --port "$MISSION_WEB_PORT" --kill-sitl-command "$REPO/scripts/kill_sitl.sh"
+ros2 run zed_px4_bridge mission_control_web --mission-dir "$MISSION_DIR" --port "$MISSION_WEB_PORT" --kill-sitl-command \"$KILL_SITL_COMMAND\"
 " C-m
 
 # Pane 5: Mission state logbook
