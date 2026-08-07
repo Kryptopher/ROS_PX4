@@ -4,7 +4,7 @@ This guide runs a TSV mission on the physical PX4 vehicle using ROS 2 on the
 Jetson. It does not start PX4 SITL or Gazebo.
 
 > **Flight safety:** Remove the propellers for setup and bench testing. For the
-> first powered flight, use the short `hover_1m_test.tsv` mission in a clear
+> first powered flight, use a short conservative hover mission in a clear
 > outdoor area with a pilot holding the RC transmitter. Confirm that the RC
 > mode switch, Land, RTL, and emergency stop behavior work before using
 > Offboard mode. Follow local operating rules and the vehicle's normal
@@ -80,7 +80,7 @@ at a time.
 Build the ROS 2 package after cloning or updating the repository:
 
 ```bash
-cd ~/ROS_PX4
+cd ~/ROS_PX4/jetson
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
@@ -91,7 +91,7 @@ the package into that workspace:
 
 ```bash
 mkdir -p ~/ros2_ws/src
-ln -sfn ~/ROS_PX4/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
+ln -sfn ~/ROS_PX4/jetson/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-select zed_px4_bridge --symlink-install
@@ -370,8 +370,8 @@ hotspot or from normal Wi-Fi as long as it can reach the Jetson.
 Install or refresh the ARK MAVLink router config:
 
 ```bash
-chmod +x ~/ROS_PX4/tools/set_qgc_target.sh
-~/ROS_PX4/tools/set_qgc_target.sh
+chmod +x ~/ROS_PX4/jetson/tools/set_qgc_target.sh
+~/ROS_PX4/jetson/tools/set_qgc_target.sh
 ```
 
 Despite the historical name, `set_qgc_target.sh` now installs the ARK
@@ -388,7 +388,7 @@ In QGroundControl, use UDP on port `14550`. In hotspot mode, connect to:
 Run this whenever you want to reinstall the ARK MAVLink router service/config:
 
 ```bash
-~/ROS_PX4/tools/set_qgc_target.sh
+~/ROS_PX4/jetson/tools/set_qgc_target.sh
 ```
 
 For HomeWifi mode, QGC should connect to the Jetson's HomeWifi IP, usually:
@@ -455,7 +455,7 @@ the boot files are replaced by an OS update and the UART loopback regresses,
 reapply it with:
 
 ```bash
-sudo ~/ROS_PX4/tools/install_jetson_r36_5_uart_fix.sh
+sudo ~/ROS_PX4/jetson/tools/install_jetson_r36_5_uart_fix.sh
 sudo reboot
 ```
 
@@ -467,7 +467,7 @@ Install and enable the ARK PAB flight controller TELEM2 DDS agent service:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-install -m 0644 ~/ROS_PX4/config/dds-agent.service \
+install -m 0644 ~/ROS_PX4/jetson/config/dds-agent.service \
   ~/.config/systemd/user/dds-agent.service
 systemctl --user daemon-reload
 systemctl --user enable --now dds-agent.service
@@ -550,8 +550,8 @@ With the propellers still removed, run the launcher only when local position is
 valid:
 
 ```bash
-cd ~/ROS_PX4
-START_ENCODER=false scripts/run_dds_mission.sh missions/hover_1m_test.tsv
+cd ~/ROS_PX4/jetson
+START_ENCODER=false scripts/run_dds_mission.sh missions/Default.tsv
 ```
 
 The executor should say that the Offboard stream is idle until the UI requests
@@ -574,10 +574,10 @@ tmux kill-session -t px4_dds_mission
 
 ## 2. Review the mission and safety limits
 
-The recommended first flight is `missions/hover_1m_test.tsv`:
+The included `missions/Default.tsv` mission is a simple hover check:
 
-* Rise to 1 m above the local origin.
-* Hold that position for 20 seconds.
+* Rise to 5 m above the takeoff/start position.
+* Hold that position until mission completion.
 * Continue holding at mission completion until the pilot lands.
 
 Mission coordinates are relative to PX4's local origin:
@@ -590,7 +590,7 @@ Mission coordinates are relative to PX4's local origin:
 The mission file is tab-delimited. Review it before every flight:
 
 ```bash
-column -s $'\t' -t missions/hover_1m_test.tsv
+column -s $'\t' -t missions/Default.tsv
 ```
 
 The hardware launcher defaults to these independent safety-monitor limits:
@@ -653,10 +653,10 @@ fly and choose safety limits that are above the planned mission envelope but
 still conservative for the test site:
 
 ```bash
-cd ~/ROS_PX4
-MISSION_FILE=$HOME/ROS_PX4/missions/Default.tsv \
+cd ~/ROS_PX4/jetson
+MISSION_FILE=$HOME/ROS_PX4/jetson/missions/Default.tsv \
 START_ENCODER=false \
-MISSION_DIR=$HOME/ROS_PX4/missions \
+MISSION_DIR=$HOME/ROS_PX4/jetson/missions \
 SAFETY_MAX_ALTITUDE_M=50.0 \
 SAFETY_WARN_ALTITUDE_M=48.0 \
 SAFETY_MAX_VELOCITY_MS=7.0 \
@@ -666,7 +666,7 @@ scripts/run_dds_mission.sh "$MISSION_FILE"
 
 Use `START_ENCODER=true` only when the payload encoder hardware is connected.
 The terminal UI's **Select Mission** option lists `.tsv` files from
-`MISSION_DIR`, which defaults to `~/ROS_PX4/missions`. If you select a different
+`MISSION_DIR`, which defaults to `~/ROS_PX4/jetson/missions`. If you select a different
 mission in the UI before takeoff, the executor switches to that TSV.
 
 Flight log folders default to a readable label based on the mission name, such
@@ -743,7 +743,7 @@ closes its files, then closes the `px4_dds_mission` tmux session.
 If the UI is not available, run the same shutdown helper from another terminal:
 
 ```bash
-~/ROS_PX4/scripts/stop_dds_mission.sh
+~/ROS_PX4/jetson/scripts/stop_dds_mission.sh
 ```
 
 Manual fallback:

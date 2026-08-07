@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${ROS_PX4_HOME:-$HOME/ROS_PX4}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${ROS_PX4_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
-MISSION_FILE="${MISSION_FILE:-${1:-$REPO/missions/hover_1m_test.tsv}}"
+MISSION_FILE="${MISSION_FILE:-${1:-$REPO/missions/Default.tsv}}"
 MISSION_DIR="${MISSION_DIR:-$REPO/missions}"
 RUN_LABEL="${RUN_LABEL:-real__$(basename "$MISSION_FILE" .tsv)}"
 SESSION="${DDS_SESSION:-px4_dds_mission}"

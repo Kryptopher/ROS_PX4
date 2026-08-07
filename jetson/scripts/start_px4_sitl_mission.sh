@@ -2,7 +2,8 @@
 set -e
 
 SESSION="px4_sitl_mission"
-REPO="${ROS_PX4_HOME:-$HOME/ROS_PX4}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${ROS_PX4_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 CONFIG_FILE="${SITL_CONFIG_FILE:-$HOME/.config/ros_px4/sitl.env}"
 ROS_WS="${ROS_WS:-$HOME/ros2_ws}"
 

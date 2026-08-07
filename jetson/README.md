@@ -36,8 +36,8 @@ scripts/
   run_sitl
   kill_sitl
 missions/
-  mission_sitl_test.tsv
-  mission_sitl_done_test.tsv
+  Default.tsv
+  square.tsv
 ```
 
 ## Install into an existing ROS2 workspace
@@ -46,7 +46,7 @@ Copy the package into your workspace:
 
 ```bash
 mkdir -p ~/ros2_ws/src
-cp -r zed_px4_bridge ~/ros2_ws/src/
+ln -sfn ~/ROS_PX4/jetson/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
 cd ~/ros2_ws
 colcon build --packages-select zed_px4_bridge --symlink-install
 source /opt/ros/humble/setup.bash
@@ -57,18 +57,17 @@ Copy scripts and mission files:
 
 ```bash
 cp scripts/start_px4_sitl_mission.sh ~/start_px4_sitl_mission.sh
-ln -sf ~/ROS_PX4/scripts/run_sitl ~/.local/bin/run_sitl
-ln -sf ~/ROS_PX4/scripts/run_sitl_105 ~/.local/bin/run_sitl_105
-ln -sf ~/ROS_PX4/scripts/kill_sitl.sh ~/.local/bin/kill_sitl
-ln -sf ~/ROS_PX4/scripts/kill_sitl_105 ~/.local/bin/kill_sitl_105
-cp missions/mission_sitl_test.tsv ~/mission_sitl_test.tsv
-cp missions/mission_sitl_done_test.tsv ~/mission_sitl_done_test.tsv
+ln -sf ~/ROS_PX4/jetson/scripts/run_sitl ~/.local/bin/run_sitl
+ln -sf ~/ROS_PX4/jetson/scripts/run_sitl_105 ~/.local/bin/run_sitl_105
+ln -sf ~/ROS_PX4/jetson/scripts/kill_sitl.sh ~/.local/bin/kill_sitl
+ln -sf ~/ROS_PX4/jetson/scripts/kill_sitl_105 ~/.local/bin/kill_sitl_105
+cp missions/Default.tsv ~/Default.tsv
 
 chmod +x ~/start_px4_sitl_mission.sh \
-  ~/ROS_PX4/scripts/run_sitl \
-  ~/ROS_PX4/scripts/run_sitl_105 \
-  ~/ROS_PX4/scripts/kill_sitl.sh \
-  ~/ROS_PX4/scripts/kill_sitl_105
+  ~/ROS_PX4/jetson/scripts/run_sitl \
+  ~/ROS_PX4/jetson/scripts/run_sitl_105 \
+  ~/ROS_PX4/jetson/scripts/kill_sitl.sh \
+  ~/ROS_PX4/jetson/scripts/kill_sitl_105
 ```
 
 Make sure `~/.local/bin` is in your PATH:
@@ -94,8 +93,8 @@ One-time setup:
 
 ```bash
 mkdir -p ~/.config/ros_px4
-cp ~/ROS_PX4/config/sitl.env.example ~/.config/ros_px4/sitl.env
-cp ~/ROS_PX4/config/sitl-105.env.example ~/.config/ros_px4/sitl-105.env
+cp ~/ROS_PX4/jetson/config/sitl.env.example ~/.config/ros_px4/sitl.env
+cp ~/ROS_PX4/jetson/config/sitl-105.env.example ~/.config/ros_px4/sitl-105.env
 nano ~/.config/ros_px4/sitl.env
 ```
 
@@ -150,10 +149,10 @@ Use the terminal mission-control UI pane to start the simulated mission:
    tmux session.
 
 `Select Mission` lists `.tsv` files from `MISSION_DIR`, which defaults to
-`~/ROS_PX4/missions`. For example:
+`~/ROS_PX4/jetson/missions`. For example:
 
 ```bash
-MISSION_DIR=$HOME/ROS_PX4/missions RUN_NAME=hover_test run_sitl
+MISSION_DIR=$HOME/ROS_PX4/jetson/missions RUN_NAME=hover_test run_sitl
 ```
 
 Before takeoff is selected, the executor streams a hold at the current local
@@ -203,7 +202,7 @@ Give an experiment a descriptive run name with:
 
 ```bash
 RUN_NAME=wind_test_01 run_sitl
-RUN_NAME=controller_gain_a MISSION_FILE=$HOME/ROS_PX4/missions/robust_control.tsv run_sitl
+RUN_NAME=controller_gain_a MISSION_FILE=$HOME/ROS_PX4/jetson/missions/robust_control.tsv run_sitl
 LOGBOOK_RATE_HZ=100 RUN_NAME=high_rate_test run_sitl
 ```
 
@@ -220,9 +219,9 @@ see [Real Drone Mission Guide](REAL_DRONE_MISSION.md).
 After the PX4 DDS agent and vehicle connection are available:
 
 ```bash
-cd ~/ROS_PX4
+cd ~/ROS_PX4/jetson
 colcon build
-START_ENCODER=true scripts/run_dds_mission.sh missions/mission_sitl_test.tsv
+START_ENCODER=true scripts/run_dds_mission.sh missions/Default.tsv
 ```
 
 The launcher starts the mission executor, independent safety monitor, flight
@@ -233,7 +232,7 @@ For this ARK PAB Jetson, QGroundControl MAVLink is handled by
 `mavlink-router.service` over the Pixhawk USB-C/FCUSB link:
 
 ```bash
-~/ROS_PX4/tools/set_qgc_target.sh
+~/ROS_PX4/jetson/tools/set_qgc_target.sh
 systemctl --user status mavlink-router.service
 ```
 
@@ -253,7 +252,7 @@ commander land
 ## Use a short test mission
 
 ```bash
-MISSION_FILE=$HOME/ROS_PX4/missions/mission_sitl_done_test.tsv run_sitl
+MISSION_FILE=$HOME/ROS_PX4/jetson/missions/Default.tsv run_sitl
 ```
 
 ## Mission logbook
