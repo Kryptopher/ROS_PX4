@@ -3,7 +3,10 @@ Description=PX4 uXRCE-DDS Agent
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/MicroXRCEAgent serial --dev /dev/serial0 -b 3000000
+# This Pi currently exposes the primary UART as /dev/ttyAMA0. If your PX4 is
+# connected through a different adapter, change this to /dev/serial0,
+# /dev/ttyUSB0, or the matching device before enabling the user service.
+ExecStart=/home/pi/.local/bin/MicroXRCEAgent serial --dev /dev/ttyAMA0 -b 3000000
 Restart=on-failure
 RestartSec=2
 
