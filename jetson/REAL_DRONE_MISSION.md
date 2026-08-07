@@ -91,7 +91,7 @@ the package into that workspace:
 
 ```bash
 mkdir -p ~/ros2_ws/src
-ln -sfn ~/ROS_PX4/jetson/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
+ln -sfn ~/ROS_PX4/shared/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-select zed_px4_bridge --symlink-install
@@ -551,7 +551,7 @@ valid:
 
 ```bash
 cd ~/ROS_PX4/jetson
-START_ENCODER=false scripts/run_dds_mission.sh missions/Default.tsv
+START_ENCODER=false scripts/run_dds_mission.sh
 ```
 
 The executor should say that the Offboard stream is idle until the UI requests
@@ -654,9 +654,9 @@ still conservative for the test site:
 
 ```bash
 cd ~/ROS_PX4/jetson
-MISSION_FILE=$HOME/ROS_PX4/jetson/missions/Default.tsv \
+MISSION_FILE=$HOME/ROS_PX4/shared/missions/Default.tsv \
 START_ENCODER=false \
-MISSION_DIR=$HOME/ROS_PX4/jetson/missions \
+MISSION_DIR=$HOME/ROS_PX4/shared/missions \
 SAFETY_MAX_ALTITUDE_M=50.0 \
 SAFETY_WARN_ALTITUDE_M=48.0 \
 SAFETY_MAX_VELOCITY_MS=7.0 \
@@ -666,7 +666,7 @@ scripts/run_dds_mission.sh "$MISSION_FILE"
 
 Use `START_ENCODER=true` only when the payload encoder hardware is connected.
 The terminal UI's **Select Mission** option lists `.tsv` files from
-`MISSION_DIR`, which defaults to `~/ROS_PX4/jetson/missions`. If you select a different
+`MISSION_DIR`, which defaults to `~/ROS_PX4/shared/missions`. If you select a different
 mission in the UI before takeoff, the executor switches to that TSV.
 
 Flight log folders default to a readable label based on the mission name, such

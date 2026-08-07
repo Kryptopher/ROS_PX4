@@ -647,7 +647,7 @@ class MissionControlWeb(Node):
 
 def main(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mission-dir', default=os.environ.get('MISSION_DIR', str(Path.home() / 'ROS_PX4' / 'missions')))
+    parser.add_argument('--mission-dir', default=os.environ.get('MISSION_DIR', str(Path.home() / 'ROS_PX4' / 'shared' / 'missions')))
     parser.add_argument('--host', default=os.environ.get('MISSION_WEB_HOST', '0.0.0.0'))
     parser.add_argument('--port', type=int, default=int(os.environ.get('MISSION_WEB_PORT', '8080')))
     parser.add_argument('--shutdown-command', default=os.environ.get('SHUTDOWN_COMMAND', ''))

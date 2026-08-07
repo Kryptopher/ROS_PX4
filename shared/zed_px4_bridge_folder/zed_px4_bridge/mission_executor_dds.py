@@ -26,7 +26,7 @@ class MissionExecutorDDS(Node):
 
         self.declare_parameter(
             'mission_file',
-            str(Path.home() / 'ROS_PX4' / 'missions' / 'mission_sitl_test.tsv'))
+            str(Path.home() / 'ROS_PX4' / 'shared' / 'missions' / 'Default.tsv'))
         self.declare_parameter('rate_hz', 200.0)
         self.declare_parameter('auto_arm', False)
         self.declare_parameter('auto_offboard', False)

@@ -4,7 +4,9 @@ set -euo pipefail
 SERVICE="$HOME/.config/systemd/user/mavlink-router.service"
 CONFIG_DIR="$HOME/.local/share/mavlink-router"
 CONFIG_FILE="$CONFIG_DIR/main.conf"
-TEMPLATE="$HOME/ROS_PX4/config/mavlink-router-main.conf"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLATFORM_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE="$PLATFORM_DIR/config/mavlink-router-main.conf"
 
 echo
 echo "Available nearby IPs:"
@@ -16,7 +18,7 @@ echo
 
 mkdir -p "$HOME/.config/systemd/user"
 mkdir -p "$CONFIG_DIR"
-install -m 0644 "$HOME/ROS_PX4/config/mavlink-router.service" "$SERVICE"
+install -m 0644 "$PLATFORM_DIR/config/mavlink-router.service" "$SERVICE"
 install -m 0644 "$TEMPLATE" "$CONFIG_FILE"
 
 systemctl --user daemon-reload

@@ -1,0 +1,11 @@
+[Unit]
+Description=PX4 uXRCE-DDS Agent
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/MicroXRCEAgent serial --dev /dev/serial0 -b 3000000
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -46,7 +46,7 @@ Copy the package into your workspace:
 
 ```bash
 mkdir -p ~/ros2_ws/src
-ln -sfn ~/ROS_PX4/jetson/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
+ln -sfn ~/ROS_PX4/shared/zed_px4_bridge_folder ~/ros2_ws/src/zed_px4_bridge
 cd ~/ros2_ws
 colcon build --packages-select zed_px4_bridge --symlink-install
 source /opt/ros/humble/setup.bash
@@ -149,10 +149,10 @@ Use the terminal mission-control UI pane to start the simulated mission:
    tmux session.
 
 `Select Mission` lists `.tsv` files from `MISSION_DIR`, which defaults to
-`~/ROS_PX4/jetson/missions`. For example:
+`~/ROS_PX4/shared/missions`. For example:
 
 ```bash
-MISSION_DIR=$HOME/ROS_PX4/jetson/missions RUN_NAME=hover_test run_sitl
+MISSION_DIR=$HOME/ROS_PX4/shared/missions RUN_NAME=hover_test run_sitl
 ```
 
 Before takeoff is selected, the executor streams a hold at the current local
@@ -202,7 +202,7 @@ Give an experiment a descriptive run name with:
 
 ```bash
 RUN_NAME=wind_test_01 run_sitl
-RUN_NAME=controller_gain_a MISSION_FILE=$HOME/ROS_PX4/jetson/missions/robust_control.tsv run_sitl
+RUN_NAME=controller_gain_a MISSION_FILE=$HOME/ROS_PX4/shared/missions/robust_control.tsv run_sitl
 LOGBOOK_RATE_HZ=100 RUN_NAME=high_rate_test run_sitl
 ```
 
@@ -221,7 +221,7 @@ After the PX4 DDS agent and vehicle connection are available:
 ```bash
 cd ~/ROS_PX4/jetson
 colcon build
-START_ENCODER=true scripts/run_dds_mission.sh missions/Default.tsv
+START_ENCODER=true scripts/run_dds_mission.sh
 ```
 
 The launcher starts the mission executor, independent safety monitor, flight
@@ -252,7 +252,7 @@ commander land
 ## Use a short test mission
 
 ```bash
-MISSION_FILE=$HOME/ROS_PX4/jetson/missions/Default.tsv run_sitl
+MISSION_FILE=$HOME/ROS_PX4/shared/missions/Default.tsv run_sitl
 ```
 
 ## Mission logbook

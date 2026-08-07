@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHARED_DIR="${ROS_PX4_SHARED_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+exec "$SHARED_DIR/scripts/start_px4_sitl_mission.sh" "$@"

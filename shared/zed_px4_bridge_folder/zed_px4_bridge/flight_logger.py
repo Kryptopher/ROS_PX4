@@ -320,7 +320,7 @@ class FlightLogger(Node):
             return None
 
     def _write_plots(self):
-        repo = Path(os.environ.get('ROS_PX4_HOME', Path.home() / 'ROS_PX4'))
+        repo = Path(os.environ.get('ROS_PX4_HOME', Path.home() / 'ROS_PX4' / 'shared'))
         tools_dir = repo / 'tools'
         if tools_dir.is_dir():
             sys.path.insert(0, str(tools_dir))

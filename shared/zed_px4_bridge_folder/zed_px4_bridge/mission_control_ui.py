@@ -213,7 +213,7 @@ def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--mission-dir',
-        default=os.environ.get('MISSION_DIR', str(Path.home() / 'ROS_PX4' / 'missions')),
+        default=os.environ.get('MISSION_DIR', str(Path.home() / 'ROS_PX4' / 'shared' / 'missions')),
         help='Folder containing selectable .tsv mission files.',
     )
     parser.add_argument(
