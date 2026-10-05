@@ -1,0 +1,59 @@
+# Fly a PX4 mission from the Jetson
+
+This is the operator workflow for a **real drone** running the Jetson mission executor. The pilot first flies the drone to a clear area and holds it at about 1 m above the ground. The Jetson then takes over through the browser controls. This guide assumes ROS 2 Humble, `px4_msgs`, the `zed_px4_bridge` package in `~/ros2_ws`, and the Jetson's `dds-agent.service` are already set up. The launcher starts the mission executor, safety monitor, flight logger, terminal controls, and browser controls together.
+
+## 1. Prepare the flight
+
+Keep a pilot on the RC transmitter. Confirm the aircraft's normal preflight checks in QGroundControl (QGC): position and home are valid, battery and GPS are healthy, and the planned Land, RTL, and manual takeover actions work at this site. Connect the computer that will show the browser UI to the Jetson's network.
+
+Choose a `.tsv` in `shared/missions/`. A TSV is the list of positions and times the Jetson will fly. Review its height, distance, and speed before starting. Its positions are measured from where the drone is when **Takeoff / Start TSV** is pressed: `x` is north, `y` is east, and `z` is up. `Default.tsv` climbs **5 m above that starting position**. If the pilot hands over at about 1 m, its highest target is about **6 m above the original takeoff level**.
+
+The Jetson's safety monitor checks height, speed, and distance from PX4's local origin whenever the drone is armed, including while the pilot flies it to the clear area. Its default height limit is only **2 m**. Set limits that cover both the pilot's positioning flight and the selected mission, with a safe margin for the actual site.
+
+## 2. Launch the executors on the Jetson
+
+SSH into the Jetson or use its terminal **before the pilot takes off**. This example runs `Default.tsv` and allows for a handover at about 1 m. The numbers are examples; choose limits suitable for the distance to the clear area and the flight site:
+
+```bash
+cd ~/ROS_PX4
+START_ENCODER=false \
+SAFETY_MAX_ALTITUDE_M=7.0 \
+SAFETY_WARN_ALTITUDE_M=6.5 \
+SAFETY_MAX_VELOCITY_MS=3.0 \
+SAFETY_LOCAL_RADIUS_M=20.0 \
+jetson/scripts/run_dds_mission.sh "$HOME/ROS_PX4/shared/missions/Default.tsv"
+```
+
+Use `START_ENCODER=true` only if the payload encoder hardware is connected. To start with a different mission, replace the final `.tsv` path and set limits that fit that mission and the pilot's positioning flight. The launcher uses the given file initially; the web UI can select another file from `shared/missions/` before the mission starts. If you need different limits, change them and restart the launcher while the drone is still on the ground and disarmed.
+
+The command opens a `tmux` session with the executor and its supporting processes. It checks that the DDS agent is running and that PX4 status and local-position topics are available. If it exits with an error, resolve that error before flying. Leave the session running during flight. To detach without stopping it, press `Ctrl-B`, then `D`; reconnect with `tmux attach -t px4_dds_mission`.
+
+## 3. Open the web controls
+
+On a device connected to the Jetson's network, open `http://JETSON_IP:8080` (or `http://10.42.0.1:8080` when using the configured Jetson hotspot). `MISSION_WEB_PORT=8081` before the launch command changes the port if needed.
+
+Wait for **DDS: Live** and **Local Position: Valid**. Check **Mode**, **Arming**, **Offboard**, **Selected Mission**, and the **Events** panel against QGC and the actual aircraft. If DDS says **No Data**, local position is invalid, or PX4 shows a failsafe, do not start the mission.
+
+The mission drop-down previews a file; choosing a name alone does **not** load it into the executor. Choose the intended file (including `Default.tsv`), click **Select Mission**, and wait until **Selected Mission** and **Events** confirm it. Do this before the pilot takes off. Check the previewed positions and that the launch-time safety limits still fit.
+
+## 4. Fly to the handover point, then start the mission
+
+With the pilot ready and the flight area clear:
+
+1. The pilot arms and takes off using the RC transmitter, then **manually flies the drone to a safe, open area** at about **1 m above the ground**. The pilot switches PX4 to **Position Hold** and confirms that the drone stays still with the sticks centered. Position Hold means PX4 is holding the drone's current place while the pilot is still in control. Keep the transmitter ready for an immediate takeover.
+2. In the web UI, confirm **DDS: Live**, **Local Position: Valid**, and **Arming: Armed**. QGC should show Position Hold and no failsafe. Do **not** click **Arm** in the web UI: the pilot already armed the drone for the manual takeoff.
+3. Click **Switch Offboard**. Offboard means PX4 accepts position commands from the Jetson. Wait for **Mode: Offboard** and **Offboard: Enabled** in the web UI, and confirm the drone is still holding its place. The Jetson has not started the TSV route yet.
+4. Click **Takeoff / Start TSV** and accept the confirmation. Despite the button's name, the drone is already airborne; this starts the selected TSV mission from its current position. The button is enabled only when the UI sees armed, Offboard, and valid local position. The mission timer starts after the drone reaches and settles at the first TSV position.
+5. Watch the aircraft, QGC, live status, and **Events** throughout the flight. A web message saying a command was *sent* confirms the UI posted it; verify the resulting PX4 state before the next step.
+
+At the mission's `end` row, the real aircraft **holds the final setpoint**. It does not automatically land or disarm. Use **Land Now** to land in place, or **RTL Now** only if home, return altitude, and path are safe. The pilot can also take over with the tested RC mode switch or QGC. For unexpected behavior, use the safest available tested recovery action promptly. Do not stop the executor while the aircraft is still airborne in Offboard.
+
+## 5. End the run
+
+After the aircraft has landed, confirm it is disarmed in QGC and the web UI. Use **Disarm** only after landing if it is still armed. Then click **Shutdown / Save Logs**. This closes the Jetson mission session and lets the logger finish writing under `~/logs/`.
+
+If the browser is unavailable, after landing and disarming run:
+
+```bash
+~/ROS_PX4/jetson/scripts/stop_dds_mission.sh
+```
