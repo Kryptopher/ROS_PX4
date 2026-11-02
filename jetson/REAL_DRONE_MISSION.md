@@ -551,7 +551,7 @@ valid:
 
 ```bash
 cd ~/ROS_PX4/jetson
-START_ENCODER=false scripts/run_dds_mission.sh
+START_ENCODER=true scripts/run_dds_mission.sh
 ```
 
 The executor should say that the Offboard stream is idle until the UI requests
@@ -648,23 +648,98 @@ systemctl --user status mavlink-router.service
 
 Confirm QGC shows live attitude, battery, GPS, and arming status.
 
+### Start and verify the MT6835 angle reader
+
+Connect the Arduino Nano before launching the mission. The Nano uses a CH340
+USB serial adapter, and this Jetson may need its local CH341 driver loaded after
+each reboot:
+
+```bash
+sudo modprobe usbserial
+sudo modprobe ch341 2>/dev/null || sudo insmod "$HOME/ch341-driver/ch341.ko"
+ls -l /dev/ttyUSB0
+```
+
+`insmod: ... File exists` is harmless; it means the driver is already loaded.
+Do not leave Arduino Serial Monitor, `read_angles.py`, or `calibrate.py` open,
+because only one process can own `/dev/ttyUSB0`. The mission launcher starts
+the ROS angle reader when `START_MT6835_ENCODER=true`; do not start a second
+copy manually.
+
+#### Calibrate the encoders before starting the mission
+
+Calibration must be completed before running the mission launcher because the
+calibration utility and ROS angle reader cannot share `/dev/ttyUSB0`. If a
+mission session is already running, land and disarm first, then stop it cleanly:
+
+```bash
+~/ROS_PX4/jetson/scripts/stop_dds_mission.sh
+```
+
+Never stop or calibrate the encoder during flight. With the mission stack
+stopped, run the interactive calibration utility:
+
+```bash
+python3 ~/ch341-driver/calibrate.py
+```
+
+Place both encoders at a known reference pose and follow the prompts. Enter the
+angle that each encoder should report at that pose; pressing Enter without a
+value uses `0` degrees. To make the current pose zero for both encoders without
+the interactive prompts, run:
+
+```bash
+python3 ~/ch341-driver/read_angles.py --zero
+```
+
+Wait for the calibration confirmation and allow the utility to exit before
+launching the mission. The Nano stores the offsets in EEPROM, so they remain
+after a reboot or power cycle.
+
 Start the selected flight mission. Set `MISSION_FILE` to the TSV you intend to
 fly and choose safety limits that are above the planned mission envelope but
 still conservative for the test site:
 
 ```bash
-cd ~/ROS_PX4/jetson
-MISSION_FILE=$HOME/ROS_PX4/shared/missions/Default.tsv \
+cd ~/ROS_PX4
 START_ENCODER=false \
-MISSION_DIR=$HOME/ROS_PX4/shared/missions \
-SAFETY_MAX_ALTITUDE_M=50.0 \
-SAFETY_WARN_ALTITUDE_M=48.0 \
-SAFETY_MAX_VELOCITY_MS=7.0 \
-SAFETY_LOCAL_RADIUS_M=50.0 \
-scripts/run_dds_mission.sh "$MISSION_FILE"
+START_MT6835_ENCODER=true \
+MT6835_SERIAL_PORT=/dev/ttyUSB0 \
+MT6835_BAUD_RATE=115200 \
+SAFETY_MAX_ALTITUDE_M=30.0 \
+SAFETY_WARN_ALTITUDE_M=6.5 \
+SAFETY_MAX_VELOCITY_MS=7.5 \
+SAFETY_LOCAL_RADIUS_M=30.0 \
+jetson/scripts/run_dds_mission.sh "$HOME/ROS_PX4/shared/missions/Default.tsv"
+```
+`START_ENCODER` controls a separate GPIO quadrature encoder and should remain
+`false` for the Nano MT6835 setup. The launcher refuses to continue unless the
+serial device exists, is unused, and produces a live encoder sample.
+
+From a second SSH terminal, confirm that both MT6835 angles are arriving before
+arming:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 topic echo --no-daemon \
+  /mt6835/angles std_msgs/msg/Float64MultiArray \
+  --qos-profile sensor_data
 ```
 
-Use `START_ENCODER=true` only when the payload encoder hardware is connected.
+The message contains two values in `data`: encoder 1 and encoder 2 in degrees.
+Move each encoder separately and confirm that the corresponding value changes
+smoothly. Press `Ctrl+C` only in this verification terminal; keep the mission
+launcher and its encoder pane running. Do not arm if no samples arrive.
+
+`square.tsv` flies a 10 m square at 10 m altitude. Each side takes 5 seconds
+(2 m/s), and each corner rotates 90 degrees over 6 seconds (15 degrees/s)
+while holding position. The mission ends at 57 seconds, including the initial
+climb/hold and final hold. These are setpoint rates; actual motion depends on
+PX4 tracking. Use safety limits that accommodate 10 m altitude, the far corner
+at about 14.2 m from the start, and 2 m/s travel; the launcher's default limits
+are below this mission's envelope.
+
 The terminal UI's **Select Mission** option lists `.tsv` files from
 `MISSION_DIR`, which defaults to `~/ROS_PX4/shared/missions`. If you select a different
 mission in the UI before takeoff, the executor switches to that TSV.
@@ -711,10 +786,19 @@ and the vehicle has settled at the first TSV setpoint for 1.5 seconds.
 
 ## 4. End or abort the flight
 
-At the `end` row, the executor keeps streaming the final setpoint only while PX4
-remains in Offboard. It does not land or disarm the real vehicle automatically.
+At the TSV `end` row, the executor keeps holding the final setpoint in Offboard
+until the operator selects **Shutdown / Save Logs**. With the pilot ready on the
+RC, select it: the executor requests **Position mode**, keeps streaming until
+PX4 leaves Offboard, then stops the mission software and saves logs. The drone
+stays armed and hovering under PX4 Position control for manual takeover.
+Completion comes from the TSV timer, so planned hovers do not end the mission.
 
-Land using QGC or the RC transmitter. If PX4 leaves Offboard because the pilot
+If PX4 rejects Position mode or confirmation is missing, the executor keeps
+holding the final Offboard setpoint and leaves the stack running. Take over
+using QGC or the RC transmitter. Launch with `AUTO_SHUTDOWN=true` to request
+Position mode and save logs automatically at the `end` row instead.
+
+Land using QGC or the RC transmitter when ready. If PX4 leaves Offboard because the pilot
 selects Land, RTL, Position, Loiter, or another tested recovery mode, the
 executor stops publishing Offboard setpoints so the transmitter/QGC mode can
 take over cleanly.
@@ -736,11 +820,18 @@ a deliberate command and the executor can relinquish control cleanly.
 
 ## 5. Shut down and collect logs
 
-After landing and disarming, select **Shutdown / Save Logs** in the browser or
-terminal mission-control UI. This stops each mission pane cleanly so the logger
-closes its files, then closes the `px4_dds_mission` tmux session.
+After the operator selects **Shutdown / Save Logs** and PX4 leaves Offboard, the
+executor calls the shutdown helper. It stops the mission panes, lets the logger
+finalize its files, and closes the tmux session. It does not land, disarm, or
+power off the Jetson. PX4 keeps flying in Position mode, and the pilot must take
+over and land manually. If PX4 is not armed in Offboard, the helper runs at once.
 
-If the UI is not available, run the same shutdown helper from another terminal:
+Rebuild the ROS package using the setup instructions above before running the
+updated launcher.
+
+If the UI is not available, run the shutdown helper from another terminal only
+after landing or once the pilot has control. It skips the Position mode handover
+and stops the Offboard stream immediately, so it asks for confirmation:
 
 ```bash
 ~/ROS_PX4/jetson/scripts/stop_dds_mission.sh
@@ -763,13 +854,68 @@ Hardware-flight logs are written under `~/logs/`. Find the newest run with:
 ls -td ~/logs/* | head -1
 ```
 
-Each run contains `flight.csv`, `events.csv`, `commands.csv`, `metadata.json`,
-`summary.txt`, `trajectory_3d.png`, `xy.png`, `height.png`, `x_time.png`,
-`y_time.png`, and a copy of the mission file. The logger also tries to copy the
-newest PX4 `.ulg` from `~/.local/share/logloader/logs` into the same run folder
-when the mission is shut down. If `metadata.json` says `"ulog_file": ""`,
-logloader had not downloaded the PX4 log yet; download it from QGC/logloader and
-copy it into the run folder manually.
+Each run contains `flight.csv`, `events.csv`, `commands.csv`,
+`encoder_angles.csv`, `metadata.json`, `summary.txt`, `trajectory_3d.png`,
+`xy.png`, `height.png`, `x_time.png`, `y_time.png`, and a copy of the mission
+file. `encoder_angles.csv` contains wall-clock time, elapsed run time, encoder 1
+angle, and encoder 2 angle. Encoder recording begins when PX4 confirms Offboard
+mode. It stops and durably flushes the CSV when the mission completes, aborts,
+or PX4 leaves Offboard. Use **Shutdown / Save Logs** after landing to finalize
+the remaining flight artifacts, metadata, plots, and PX4 ULog copy.
+
+Confirm that the completed mission contains angle samples:
+
+```bash
+latest_run="$(ls -td "$HOME"/logs/*/ | head -n 1)"
+wc -l "$latest_run/encoder_angles.csv"
+tail "$latest_run/encoder_angles.csv"
+grep 'encoder_angle_rows' "$latest_run/metadata.json"
+```
+
+The line count must be greater than one; the first line is the CSV header. The
+shutdown helper now waits for the logger to flush and finish its output before
+closing tmux. Do not use `tmux kill-session` as the normal shutdown path.
+
+### Download the PX4 `.ulg` without QGroundControl
+
+After manually landing and disarming, keep the flight controller powered and
+connected by USB. Download the newest stored PX4 log directly on the Jetson:
+
+```bash
+systemctl --user start mavlink-router.service
+python3 ~/ROS_PX4/jetson/tools/download_ulog.py
+```
+
+The tool uses the router's existing `companion_aux` endpoint on UDP port
+`14569`. Leave that port free while downloading; no QGroundControl is required.
+If Python reports that `pymavlink` is missing, install it with
+`python3 -m pip install --user pymavlink`.
+
+List logs or choose a particular log ID:
+
+```bash
+python3 ~/ROS_PX4/jetson/tools/download_ulog.py --list
+python3 ~/ROS_PX4/jetson/tools/download_ulog.py --log-id 42
+```
+
+By default, downloads go to `~/.local/share/logloader/logs/`. To save directly
+into a particular mission run instead, pass its folder explicitly:
+
+```bash
+python3 ~/ROS_PX4/jetson/tools/download_ulog.py --output-dir "$HOME/logs/YOUR_RUN_FOLDER"
+```
+
+The tool checks for a disarmed PX4 heartbeat, retries missing data, checks the
+ULog header, and only renames `.ulg.part` to `.ulg` when the advertised byte
+count has been received. Interrupted/failed downloads retain `.part` files;
+move or remove that partial file before retrying the same log. Existing output
+files are not overwritten. Do not run another log downloader simultaneously.
+
+Mission completion now saves the ROS logs while the vehicle is still hovering;
+the complete PX4 flight log must be downloaded after landing and disarming.
+A later download does not update the already finalized `metadata.json`.
+The flight logger still copies recent `.ulg` files from the logloader folder
+when available during finalization.
 
 ---
 

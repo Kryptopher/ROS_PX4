@@ -2,6 +2,9 @@
 
 import csv
 import math
+import os
+import subprocess
+import time
 from pathlib import Path
 
 from std_msgs.msg import String
@@ -31,6 +34,15 @@ class MissionExecutorDDS(Node):
         self.declare_parameter('auto_arm', False)
         self.declare_parameter('auto_offboard', False)
         self.declare_parameter('auto_land', False)
+        self.declare_parameter('completion_shutdown_script', '')
+        self.completion_shutdown_script = self.get_parameter('completion_shutdown_script').value
+        self.completion_shutdown_started = False
+        self.manual_shutdown_requested = False
+        self.declare_parameter('auto_position_after_mission', False)
+        self.auto_position_after_mission = bool(self.get_parameter('auto_position_after_mission').value)
+        self.completion_requested_at = None
+        self.position_request_at = None
+        self.status_received_at = None
         self.declare_parameter('auto_disarm_after_land', False)
         self.declare_parameter('force_disarm_after_land_timeout_s', 0.0)
         self.declare_parameter('max_velocity_ms', 12.0)
@@ -204,6 +216,7 @@ class MissionExecutorDDS(Node):
         self.local_position = msg
 
     def vehicle_status_cb(self, msg):
+        self.status_received_at = time.monotonic()
         self.vehicle_status = msg
 
     def vehicle_control_mode_cb(self, msg):
@@ -249,6 +262,8 @@ class MissionExecutorDDS(Node):
             self.rtl()
         elif command == 'SELECT_MISSION':
             self.select_mission(value)
+        elif command == 'SAVE_AND_HANDOVER':
+            self.request_save_and_handover()
         else:
             self.get_logger().warn(f'Ignoring unknown mission control command: {msg.data}')
 
@@ -554,7 +569,68 @@ class MissionExecutorDDS(Node):
         )
         return settled, position_error, speed
 
+    def request_save_and_handover(self):
+        if self.manual_shutdown_requested:
+            return
+        self.manual_shutdown_requested = True
+        self.publish_event('SAVE_AND_HANDOVER_REQUESTED', 'operator requested Shutdown / Save Logs')
+        # Stopping the Offboard stream in flight would trigger PX4's Offboard-loss
+        # failsafe, so hand over to Position mode first and save once PX4 confirms.
+        if self.is_armed_and_offboard() and not self.control_relinquished:
+            self.completion_requested_at = time.monotonic()
+            self.request_completion_position()
+            return
+        self.relinquish_control('SAVE_AND_HANDOVER_STOPPING', 'not streaming Offboard to a flying vehicle')
+        self.run_completion_shutdown_script()
+
+    def shutdown_after_completion(self):
+        if (not (self.reported_mission_done or self.manual_shutdown_requested)
+                or not self.completion_shutdown_script
+                or self.completion_shutdown_started or self.completion_requested_at is None):
+            return
+        now = time.monotonic()
+        # Keep streaming the final setpoint until PX4 confirms Position mode.
+        # A missing/rejected mode change must never stop the Offboard stream.
+        if (self.vehicle_status is None or self.status_received_at is None
+                or self.status_received_at <= self.completion_requested_at
+                or now - self.status_received_at > 2.0):
+            return
+        nav_state = int(self.vehicle_status.nav_state)
+        # After an operator request any non-Offboard mode (pilot chose Land, RTL...)
+        # no longer needs the stream; the automatic path insists on Position.
+        if (nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                or (nav_state != VehicleStatus.NAVIGATION_STATE_POSCTL
+                    and not self.manual_shutdown_requested)):
+            if (not self.control_relinquished
+                    and nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                    and (self.position_request_at is None or now - self.position_request_at >= 1.0)):
+                self.request_completion_position()
+            return
+        self.relinquish_control('MISSION_COMPLETE_POSITION', f'PX4 nav_state={nav_state}; saving logs')
+        self.run_completion_shutdown_script()
+
+    def run_completion_shutdown_script(self):
+        if not self.completion_shutdown_script:
+            self.get_logger().error('Shutdown requested but no completion_shutdown_script is configured.')
+            return
+        try:
+            subprocess.Popen(
+                [self.completion_shutdown_script], start_new_session=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, env=os.environ.copy(),
+            )
+        except OSError as exc:
+            self.get_logger().error(f'Could not start completion shutdown: {exc}')
+        self.completion_shutdown_started = True
+
+    def request_completion_position(self):
+        self.position_request_at = time.monotonic()
+        # PX4 custom main mode 3 = Position control.
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 3.0)
+        self.publish_event('MISSION_COMPLETE_POSITION_REQUESTED', 'waiting for PX4 Position mode confirmation')
+
     def timer_cb(self):
+        self.shutdown_after_completion()
         # Wait until PX4 local position is available.
         if self.local_position is None:
             self.get_logger().info(
@@ -697,7 +773,11 @@ class MissionExecutorDDS(Node):
             if not self.reported_mission_done:
                 self.publish_event('MISSION_COMPLETE_HOLDING', 'holding final setpoint')
                 self.publish_active(False)
-                if self.auto_land:
+                self.reported_mission_done = True
+                if self.auto_position_after_mission:
+                    self.completion_requested_at = time.monotonic()
+                    self.request_completion_position()
+                elif self.auto_land:
                     self.land()
                     self.land_command_time = self.get_clock().now().nanoseconds / 1e9
                     self.relinquish_control(

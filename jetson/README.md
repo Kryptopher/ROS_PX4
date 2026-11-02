@@ -249,6 +249,220 @@ At mission end, the drone should hold the final setpoint. Land manually:
 commander land
 ```
 
+## Nano MT6835 angle readings and flight logs
+
+The Arduino Nano reads both MT6835 encoders over SPI and streams their angles
+over USB serial. The ROS `mt6835_encoder` node forwards those readings to the
+flight logger. While PX4 is in Offboard, the logger saves them to a separate
+`encoder_angles.csv` inside that run's log folder.
+
+### Prepare the Nano
+
+Open `~/ch341-driver/mt6835_dual_encoder.ino` in Arduino IDE, select the Nano
+and its USB port, and upload the sketch. The IDE is only needed to upload or
+change the Arduino sketch; you can calibrate the zero point from the Jetson
+terminal. Close Serial Monitor before using the Jetson serial tools because
+only one program can use the serial port at a time.
+
+### Set up the Jetson serial port and ROS node
+
+The Jetson's current kernel may need the locally built CH341 driver loaded
+before the Nano appears as `/dev/ttyUSB0`:
+
+```bash
+sudo modprobe usbserial
+sudo modprobe ch341 2>/dev/null || sudo insmod "$HOME/ch341-driver/ch341.ko"
+ls -l /dev/ttyUSB0
+```
+
+`insmod: ... File exists` is harmless and means the driver is already loaded.
+
+Install pyserial and rebuild the ROS package after pulling these changes:
+
+```bash
+sudo apt install python3-serial
+source /opt/ros/humble/setup.bash
+cd ~/ros2_ws
+colcon build --packages-select zed_px4_bridge --symlink-install
+```
+
+If `brltty` is installed and the serial device repeatedly disappears, it may
+be claiming the CH340 adapter. Stop or configure `brltty` not to probe USB ID
+`1a86:7523`.
+
+### View live angles from the Jetson terminal
+
+After `/dev/ttyUSB0` exists, start the serial reader with:
+
+```bash
+python3 ~/ch341-driver/read_angles.py
+```
+
+It prints both angles continuously at the Nano's 115200 baud rate. Move the
+encoders to any position, then type `z` and press Enter to make that position
+zero for both encoders. Hold the encoders still until `Zero saved for both
+encoders.` appears. The zero offsets are stored in the Nano's EEPROM and remain
+active after a restart. Calibration averages multiple readings, and the small
+sensor-noise region around the saved reference is reported as exactly `0.000`
+instead of wrapping to nearly `360`. Type `q` and Enter or press `Ctrl+C` to
+stop the reader.
+
+To zero immediately after connecting, first hold both encoders at the desired
+zero pose, then run:
+
+```bash
+python3 ~/ch341-driver/read_angles.py --zero
+```
+
+The Arduino IDE Serial Monitor, calibration utility, and ROS flight logger
+cannot use the same serial port at the same time, so stop this reader before
+running any of those.
+
+### Calibrate without Arduino IDE
+
+Stop the live angle reader if it is running, then run the calibration utility:
+sudo modprobe usbserial
+sudo insmod "$HOME/ch341-driver/ch341.ko"
+ls -l /dev/ttyUSB0
+
+```bash
+python3 ~/ch341-driver/calibrate.py
+```
+
+When prompted, move both encoders to a known reference pose and press Enter.
+Enter the angle that each encoder should report at that pose; pressing Enter
+for an encoder uses `0` degrees. For example, entering `45` for encoder 1 and
+`90` for encoder 2 makes the current pose read 45 and 90 degrees. The utility
+sends `c,45,90` to the Nano and expects a calibration confirmation. Values are
+wrapped to one revolution, and offsets are stored in EEPROM. The uploaded
+sketch must support the `c,<angle1>,<angle2>` command. Do not run the utility
+while the ROS mission logger or another serial monitor is using `/dev/ttyUSB0`.
+
+The equivalent Arduino Serial Monitor command is `c,45,90` followed by a
+newline. A bare `c` sets both current positions to zero.
+
+### Record a selected mission
+
+Follow [Real Drone Mission Guide](REAL_DRONE_MISSION.md) for the complete
+preflight, bench-test, recovery, and shutdown requirements. The steps below
+start a real PX4 mission and record the Nano MT6835 encoder angles.
+
+1. Confirm the PX4 DDS link and local position are valid, QGroundControl shows
+  live vehicle data, and the RC transmitter and recovery controls are ready.
+  Do not fly if local position is invalid or QGroundControl reports a warning
+  you have not resolved.
+2. Calibrate before starting the mission launcher. No Arduino Serial Monitor,
+  ROS MT6835 node, or other serial reader may be using `/dev/ttyUSB0`. If a
+  mission session is already running, land and disarm before stopping it:
+
+  ```bash
+  ~/ROS_PX4/jetson/scripts/stop_dds_mission.sh
+  python3 ~/ch341-driver/calibrate.py
+  ```
+
+  Place both encoders at the reference pose and enter the angle each should
+  report. Pressing Enter without entering an angle uses `0` degrees. To set the
+  current pose directly to zero for both encoders instead, run:
+
+  ```bash
+  python3 ~/ch341-driver/read_angles.py --zero
+  ```
+
+  Wait for confirmation and ensure the utility exits before continuing. The
+  calibration is stored in the Nano's EEPROM. Never calibrate during flight.
+3. Review the mission file and confirm its path and trajectory are appropriate
+  for the flight area. For example:
+
+  ```bash
+  MISSION_FILE="$HOME/ROS_PX4/shared/missions/straight_line_mission.tsv"
+  column -s $'\t' -t < "$MISSION_FILE"
+  ```
+
+  The example `straight_line_mission.tsv` currently commands a 10 m altitude.
+  The hardware safety monitor defaults to a 2 m maximum altitude, 1.5 m/s
+  maximum velocity, and 5 m local radius. Review the planned trajectory and
+  configure the safety limits for the approved test envelope before launch;
+  do not blindly copy example limits from elsewhere in this guide. Exceeding
+  an abort limit requests RTL.
+4. Connect the Nano and confirm its serial device exists. The default is
+  `/dev/ttyUSB0`:
+
+  ```bash
+  ls -l /dev/ttyUSB0
+  ```
+
+  If you use `read_angles.py` to check or zero the encoders, exit it before
+  launching the mission. The ROS bridge, Arduino Serial Monitor, calibration
+  utility, and live reader cannot use the serial port at the same time.
+5. If this is the first run after updating the package, install `python3-serial`
+  and rebuild it as described in [Set up the Jetson serial port and ROS node](#set-up-the-jetson-serial-port-and-ros-node).
+6. From the Jetson, launch the desired TSV with the Nano bridge enabled:
+
+```bash
+cd ~/ROS_PX4/jetson
+  export MISSION_FILE="$HOME/ROS_PX4/shared/missions/straight_line_mission.tsv"
+  export MISSION_DIR="$HOME/ROS_PX4/shared/missions"
+  START_ENCODER=false \
+  START_MT6835_ENCODER=true \
+  MT6835_SERIAL_PORT=/dev/ttyUSB0 \
+  scripts/run_dds_mission.sh "$MISSION_FILE"
+```
+
+  `START_MT6835_ENCODER=true` enables the Nano bridge. `START_ENCODER` controls
+  a separate quadrature encoder, so leave it `false` unless that hardware is
+  connected. The Nano bridge defaults to `/dev/ttyUSB0` at 115200 baud; use
+  `MT6835_SERIAL_PORT` or `MT6835_BAUD_RATE` to override those settings.
+7. In a second SSH terminal, verify that both encoder angles are being
+  published before arming:
+
+  ```bash
+  source /opt/ros/humble/setup.bash
+  source ~/ros2_ws/install/setup.bash
+  ros2 topic echo --no-daemon \
+    /mt6835/angles std_msgs/msg/Float64MultiArray \
+    --qos-profile sensor_data
+  ```
+
+  Move each encoder separately and confirm that the corresponding value in the
+  two-element `data` array changes. Press `Ctrl+C` only in this verification
+  terminal. Do not start another serial reader while the mission bridge owns
+  `/dev/ttyUSB0`.
+8. Wait for the executor to report that the mission is loaded and local
+  position is available. Check QGroundControl for warnings. The terminal
+  mission UI is available in tmux; the browser UI is at
+  `http://JETSON_IP:8080`.
+9. When the pilot is ready, use either UI to select **Switch Offboard**, then
+  **Arm**. The executor begins streaming a current-position hold; arming does
+  not start the TSV. Select **Select Mission** if you need to change the file,
+  then select **Takeoff / Start TSV** to begin the mission. Keep the pilot at
+  the controls and monitor the vehicle, QGroundControl, and mission UI.
+10. The logger begins recording Nano encoder samples when PX4 confirms Offboard.
+  It stops recording and durably flushes `encoder_angles.csv` when the mission
+  completes, aborts, or PX4 leaves Offboard. At mission end, land with
+  QGroundControl or the RC transmitter; the hardware launcher does not land or
+  disarm automatically. After landing and disarming, select **Shutdown / Save
+  Logs** in the UI to finalize metadata, plots, and the PX4 ULog copy.
+
+Logs are saved under `~/logs/<timestamp>_real__<mission>/`. To view the newest
+run's angle log after stopping the mission:
+
+```bash
+latest_run="$(ls -td "$HOME"/logs/*/ | head -n 1)"
+wc -l "$latest_run/encoder_angles.csv"
+tail "$latest_run/encoder_angles.csv"
+grep 'encoder_angle_rows' "$latest_run/metadata.json"
+column -s, -t < "$latest_run/encoder_angles.csv" | less -S
+```
+
+The CSV contains wall-clock time, elapsed run time, encoder 1 angle in
+degrees, and encoder 2 angle in degrees. Its line count must be greater than one
+because the first line is the header. **Shutdown / Save Logs** uses the stop
+helper, which waits for the logger to flush `encoder_angles.csv`, write its
+sample count to `metadata.json`, and finish the remaining run output before
+closing tmux. Use `q` to exit the viewer. The existing `START_ENCODER` option
+controls the separate quadrature payload encoder and does not enable or disable
+the Nano bridge.
+
 ## Use a short test mission
 
 ```bash
@@ -322,3 +536,43 @@ kill_sitl
 ```
 
 This saves the active mission logbook before stopping PX4 and Gazebo.
+## SITL on this Windows PC
+
+The `sitl-173` profile runs PX4 and Gazebo in this PC's WSL Ubuntu while the
+Jetson at `192.168.0.170` runs the DDS agent, mission executor, and logbook.
+The profile is in `jetson/config/sitl-173.env.example`. It opens the Gazebo
+GUI on this Windows PC through WSLg.
+
+PC prerequisites: install and build `~/PX4-Autopilot` with Gazebo in WSL
+Ubuntu, run an SSH server in WSL, expose it to the Jetson at
+`DESKTOP-BGT94JT.local:2222`, and authorize the Jetson's SSH key. Allow the PC's PX4
+DDS client to reach `192.168.0.170:8888/udp`. The profile alone does not
+install these PC components.
+
+On the Jetson, copy the profile:
+
+```bash
+mkdir -p ~/.config/ros_px4
+cp ~/ROS_PX4/jetson/config/sitl-173.env.example ~/.config/ros_px4/sitl-173.env
+```
+
+Add this SSH alias to the Jetson's `~/.ssh/config`:
+
+```text
+Host pc-173-sitl
+    HostName DESKTOP-BGT94JT.local
+    Port 2222
+    User darren_johnson
+```
+
+Check connectivity, then start and stop the mission with the profile:
+
+```bash
+ssh -o BatchMode=yes pc-173-sitl 'test -d ~/PX4-Autopilot && echo ready'
+bash ~/ROS_PX4/shared/scripts/run_sitl_173
+bash ~/ROS_PX4/shared/scripts/kill_sitl_173
+```
+
+The `bash` form works without changing script permissions. If either device's
+Jetson LAN address changes, update `SITL_AGENT_IP` in the copied profile
+before launching. The PC alias follows its current LAN address through mDNS.

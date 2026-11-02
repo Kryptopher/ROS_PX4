@@ -254,7 +254,7 @@ INDEX_HTML = r"""<!doctype html>
             <button type="button" class="secondary" data-command="disarm">Disarm</button>
             <button type="button" class="warn" data-command="land" data-confirm="Command Land now?"><span>Land Now</span></button>
             <button type="button" class="warn" data-command="rtl" data-confirm="Command Return to Launch now?"><span>RTL Now</span></button>
-            <button type="button" class="danger" id="shutdownBtn" data-command="shutdown" data-confirm="Only after landing and disarming. Shutdown and save logs?">Shutdown / Save Logs</button>
+            <button type="button" class="danger" id="shutdownBtn" data-command="shutdown" data-confirm="Pilot ready on RC? This switches PX4 to Position mode, then stops the mission software and saves logs.">Shutdown / Save Logs</button>
             <button type="button" class="danger" id="killSitlBtn" data-command="kill_sitl" data-confirm="Stop the SITL tmux session and related processes?">Kill SITL</button>
           </div>
           <div class="commandStatus" id="commandStatus">Ready</div>
@@ -620,7 +620,11 @@ class MissionControlWeb(Node):
             }
             if command == 'shutdown':
                 try:
-                    node.run_shell_command(node.shutdown_command)
+                    # The executor hands over to Position mode before stopping if PX4 is in Offboard.
+                    if node.control_pub.get_subscription_count() > 0:
+                        node.enqueue_command('SAVE_AND_HANDOVER')
+                    else:
+                        node.run_shell_command(node.shutdown_command)
                     return jsonify({'ok': True})
                 except Exception as exc:
                     return jsonify({'error': str(exc)}), 400

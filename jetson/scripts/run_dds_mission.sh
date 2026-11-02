@@ -8,5 +8,6 @@ ROOT_DIR="$(cd "$PLATFORM_DIR/.." && pwd)"
 export ROS_PX4_PLATFORM="${ROS_PX4_PLATFORM:-jetson}"
 export ROS_PX4_PLATFORM_HOME="${ROS_PX4_PLATFORM_HOME:-$PLATFORM_DIR}"
 export ROS_PX4_SHARED_HOME="${ROS_PX4_SHARED_HOME:-$ROOT_DIR/shared}"
+export START_MT6835_ENCODER="${START_MT6835_ENCODER:-true}"
 
 exec "$ROS_PX4_SHARED_HOME/scripts/run_dds_mission.sh" "$@"

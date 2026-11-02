@@ -20,6 +20,7 @@ setup(
         'console_scripts': [
             'mission_executor_dds = zed_px4_bridge.mission_executor_dds:main',
             'payload_encoder = zed_px4_bridge.payload_encoder:main',
+            'mt6835_encoder = zed_px4_bridge.mt6835_encoder:main',
             'flight_logger = zed_px4_bridge.flight_logger:main',
             'mission_control_ui = zed_px4_bridge.mission_control_ui:main',
             'mission_control_web = zed_px4_bridge.mission_control_web:main',

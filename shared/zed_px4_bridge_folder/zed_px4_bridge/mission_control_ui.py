@@ -78,8 +78,14 @@ class MissionControlNode(Node):
         if not self.shutdown_command:
             self.last_event = 'Shutdown is not configured for this UI'
             return
+        # The executor hands over to Position mode before stopping if PX4 is in Offboard.
+        if self.control_pub.get_subscription_count() > 0:
+            self.publish('SAVE_AND_HANDOVER')
+            self.last_event = 'Save logs requested; waiting for PX4 Position mode'
+            return False
         self.run_shell_command(self.shutdown_command)
         self.last_event = 'Shutdown / Save Logs requested'
+        return True
 
     def run_shell_command(self, command):
         subprocess.Popen(
@@ -199,8 +205,9 @@ def curses_main(stdscr, node):
                 node.kill_sitl()
                 return
             if command == 'SHUTDOWN':
-                node.shutdown_and_save_logs()
-                return
+                if node.shutdown_and_save_logs():
+                    return
+                continue
             if command == 'SELECT':
                 stdscr.nodelay(False)
                 mission_picker(stdscr, node)
